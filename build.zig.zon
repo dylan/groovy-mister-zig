@@ -1,0 +1,12 @@
+.{
+    .name = .groovy_mister,
+    .version = "0.1.0",
+    .fingerprint = 0x1ec558e276d9e06d,
+    .minimum_zig_version = "0.15.2",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "include",
+    },
+}

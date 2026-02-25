@@ -1,0 +1,5 @@
+module GroovyMisterZig {
+    header "groovy_mister.h"
+    link "groovy-mister"
+    export *
+}

@@ -1,0 +1,37 @@
+//! GroovyMisterZig — UDP streaming library for MiSTer FPGA.
+//!
+//! Streams desktop frames to a MiSTer FPGA over UDP port 32100.
+//! Provides a C ABI for integration with Swift/ObjC hosts.
+//!
+//! ## Modules
+//! - `protocol`: Packet formats, command codes, FPGA status parsing
+//! - `Connection`: Non-blocking UDP socket, frame chunking, sync polling
+//! - `Health`: Rolling-window metrics (sync wait, VRAM ready rate)
+//! - `c_api`: C-exported functions (`gmz_connect`, `gmz_submit`, etc.)
+
+/// UDP protocol: command codes, packet builders, ACK parsing, modeline/status types.
+pub const protocol = @import("protocol.zig");
+/// Rolling-window health metrics: sync wait timing, VRAM ready rate, stall detection.
+pub const Health = @import("Health.zig");
+/// Non-blocking UDP connection: socket lifecycle, frame chunking, sync polling.
+pub const Connection = @import("Connection.zig");
+/// C ABI exports: `gmz_connect`, `gmz_disconnect`, `gmz_tick`, `gmz_set_modeline`, `gmz_submit`, `gmz_submit_audio`, `gmz_wait_sync`.
+pub const c_api = @import("c_api.zig");
+
+// Force export of C ABI symbols
+comptime {
+    _ = &c_api.gmz_connect;
+    _ = &c_api.gmz_disconnect;
+    _ = &c_api.gmz_tick;
+    _ = &c_api.gmz_set_modeline;
+    _ = &c_api.gmz_submit;
+    _ = &c_api.gmz_submit_audio;
+    _ = &c_api.gmz_wait_sync;
+}
+
+test {
+    _ = protocol;
+    _ = Health;
+    _ = Connection;
+    _ = c_api;
+}
