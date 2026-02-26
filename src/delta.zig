@@ -9,6 +9,8 @@ pub const DeltaState = struct {
     prev_frame: []u8,
     delta_buf: []u8,
     has_prev: bool = false,
+    frame_count: u32 = 0,
+    keyframe_interval: u32 = 0, // 0 = disabled
 };
 
 /// Return a `Connection.Compressor` backed by delta (wrapping subtract) + LZ4 compression.
@@ -29,6 +31,17 @@ fn deltaCompress(ctx: ?*anyopaque, src: []const u8, dst: []u8) ?Connection.Compr
         // First frame: send full compressed frame, store as reference
         @memcpy(state.prev_frame[0..src.len], src);
         state.has_prev = true;
+        state.frame_count = 0;
+        const result = lz4.compress(null, src, dst) orelse return null;
+        return .{ .data = result.data, .is_delta = false };
+    }
+
+    state.frame_count += 1;
+
+    // Periodic keyframe: send a full (non-delta) frame so the FPGA can resync
+    if (state.keyframe_interval > 0 and state.frame_count >= state.keyframe_interval) {
+        state.frame_count = 0;
+        @memcpy(state.prev_frame[0..src.len], src);
         const result = lz4.compress(null, src, dst) orelse return null;
         return .{ .data = result.data, .is_delta = false };
     }
@@ -156,4 +169,144 @@ test "round-trip: delta compress then add-reconstruct matches original" {
         r.* = d +% p;
     }
     try std.testing.expectEqualSlices(u8, &frame2, &reconstructed);
+}
+
+test "periodic keyframe fires at expected interval" {
+    const frame_size = 64;
+    var prev_buf: [frame_size]u8 = undefined;
+    var delta_buf: [frame_size]u8 = undefined;
+    var lz4_buf: [frame_size + 128]u8 = undefined;
+    var state = DeltaState{
+        .prev_frame = &prev_buf,
+        .delta_buf = &delta_buf,
+        .keyframe_interval = 4,
+    };
+
+    const comp = compressor(&state, &lz4_buf);
+    var frame: [frame_size]u8 = undefined;
+
+    // Frame 0 (first frame): always a keyframe
+    for (&frame, 0..) |*b, i| b.* = @truncate(i);
+    const r0 = comp.compress(&frame) orelse return error.CompressFailed;
+    try std.testing.expect(!r0.is_delta);
+    try std.testing.expectEqual(@as(u32, 0), state.frame_count);
+
+    // Frames 1-3: deltas
+    for (0..3) |_| {
+        for (&frame, 0..) |*b, i| b.* = @truncate(i +% 1);
+        const r = comp.compress(&frame) orelse return error.CompressFailed;
+        try std.testing.expect(r.is_delta);
+    }
+    try std.testing.expectEqual(@as(u32, 3), state.frame_count);
+
+    // Frame 4: keyframe (frame_count reaches keyframe_interval)
+    for (&frame, 0..) |*b, i| b.* = @truncate(i +% 2);
+    const r4 = comp.compress(&frame) orelse return error.CompressFailed;
+    try std.testing.expect(!r4.is_delta);
+    try std.testing.expectEqual(@as(u32, 0), state.frame_count);
+}
+
+test "keyframe_interval = 0 disables periodic keyframes" {
+    const frame_size = 64;
+    var prev_buf: [frame_size]u8 = undefined;
+    var delta_buf: [frame_size]u8 = undefined;
+    var lz4_buf: [frame_size + 128]u8 = undefined;
+    var state = DeltaState{
+        .prev_frame = &prev_buf,
+        .delta_buf = &delta_buf,
+        .keyframe_interval = 0,
+    };
+
+    const comp = compressor(&state, &lz4_buf);
+    var frame: [frame_size]u8 = undefined;
+
+    // First frame: keyframe
+    for (&frame) |*b| b.* = 0xAA;
+    _ = comp.compress(&frame);
+
+    // 200 subsequent frames should all be deltas (no periodic keyframe)
+    for (0..200) |_| {
+        for (&frame) |*b| b.* = 0xBB;
+        const r = comp.compress(&frame) orelse return error.CompressFailed;
+        try std.testing.expect(r.is_delta);
+    }
+}
+
+test "frame counter resets after keyframe" {
+    const frame_size = 64;
+    var prev_buf: [frame_size]u8 = undefined;
+    var delta_buf: [frame_size]u8 = undefined;
+    var lz4_buf: [frame_size + 128]u8 = undefined;
+    var state = DeltaState{
+        .prev_frame = &prev_buf,
+        .delta_buf = &delta_buf,
+        .keyframe_interval = 2,
+    };
+
+    const comp = compressor(&state, &lz4_buf);
+    const frame = [_]u8{0xCC} ** frame_size;
+
+    // Frame 0: first frame keyframe, count = 0
+    _ = comp.compress(&frame);
+    try std.testing.expectEqual(@as(u32, 0), state.frame_count);
+
+    // Frame 1: delta, count = 1
+    _ = comp.compress(&frame);
+    try std.testing.expectEqual(@as(u32, 1), state.frame_count);
+
+    // Frame 2: keyframe fires, count resets to 0
+    const r = comp.compress(&frame) orelse return error.CompressFailed;
+    try std.testing.expect(!r.is_delta);
+    try std.testing.expectEqual(@as(u32, 0), state.frame_count);
+
+    // Frame 3: delta again, count = 1
+    const r2 = comp.compress(&frame) orelse return error.CompressFailed;
+    try std.testing.expect(r2.is_delta);
+    try std.testing.expectEqual(@as(u32, 1), state.frame_count);
+}
+
+test "round-trip correctness across a keyframe boundary" {
+    const frame_size = 128;
+    const lz4_import = @import("lz4");
+    var prev_buf: [frame_size]u8 = undefined;
+    var delta_buf_storage: [frame_size]u8 = undefined;
+    var lz4_buf: [frame_size + 256]u8 = undefined;
+    var state = DeltaState{
+        .prev_frame = &prev_buf,
+        .delta_buf = &delta_buf_storage,
+        .keyframe_interval = 3,
+    };
+
+    const comp = compressor(&state, &lz4_buf);
+
+    // Simulate FPGA-side reconstruction state
+    var fpga_prev: [frame_size]u8 = undefined;
+
+    // Helper: compress a frame and reconstruct on the "FPGA side"
+    const frames = [_][frame_size]u8{
+        [_]u8{0x10} ** frame_size, // frame 0: keyframe (first)
+        [_]u8{0x20} ** frame_size, // frame 1: delta
+        [_]u8{0x30} ** frame_size, // frame 2: delta
+        [_]u8{0x40} ** frame_size, // frame 3: keyframe (periodic)
+        [_]u8{0x50} ** frame_size, // frame 4: delta
+    };
+
+    for (&frames) |*frame| {
+        const result = comp.compress(frame) orelse return error.CompressFailed;
+
+        var decompressed: [frame_size]u8 = undefined;
+        const n = lz4_import.decompressSafe(result.data, &decompressed) catch return error.DecompressFailed;
+
+        if (result.is_delta) {
+            // FPGA adds delta to its previous frame
+            for (decompressed[0..n], fpga_prev[0..n], 0..) |d, p, i| {
+                fpga_prev[i] = d +% p;
+            }
+        } else {
+            // Keyframe: FPGA replaces its reference directly
+            @memcpy(fpga_prev[0..n], decompressed[0..n]);
+        }
+
+        try std.testing.expectEqualSlices(u8, frame, fpga_prev[0..n]);
+    }
 }

@@ -185,6 +185,7 @@ pub export fn gmz_connect_ex(host: [*:0]const u8, mtu: u16, rgb_mode: u8, sound_
             ds.* = .{
                 .prev_frame = pf,
                 .delta_buf = db,
+                .keyframe_interval = 120,
             };
             delta_state_ptr = ds;
             compressor_val = delta.compressor(ds, buf);
