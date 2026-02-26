@@ -120,6 +120,72 @@ uint16_t gmz_calc_vsync(gmz_conn_t conn, uint32_t margin_ns,
 /// Get frame period in nanoseconds from current modeline. 0 if no modeline set.
 uint64_t gmz_frame_time_ns(gmz_conn_t conn);
 
+/* --- Input (FPGA joystick/keyboard/mouse on UDP port 32101) --- */
+
+/// Opaque input handle.
+typedef struct gmz_input *gmz_input_t;
+
+/// Joystick button bitmask constants.
+#define GMZ_JOY_RIGHT  0x0001
+#define GMZ_JOY_LEFT   0x0002
+#define GMZ_JOY_DOWN   0x0004
+#define GMZ_JOY_UP     0x0008
+#define GMZ_JOY_B1     0x0010
+#define GMZ_JOY_B2     0x0020
+#define GMZ_JOY_B3     0x0040
+#define GMZ_JOY_B4     0x0080
+#define GMZ_JOY_B5     0x0100
+#define GMZ_JOY_B6     0x0200
+#define GMZ_JOY_B7     0x0400
+#define GMZ_JOY_B8     0x0800
+#define GMZ_JOY_B9     0x1000
+#define GMZ_JOY_B10    0x2000
+
+/// Joystick state (digital buttons + analog axes).
+typedef struct {
+    uint32_t frame;    ///< FPGA frame counter when this state was sent.
+    uint16_t joy1;     ///< Player 1 digital buttons (bitfield of GMZ_JOY_*).
+    uint16_t joy2;     ///< Player 2 digital buttons (bitfield of GMZ_JOY_*).
+    uint8_t order;     ///< Sequence counter within a frame (for dedup).
+    int8_t j1_lx;     ///< Player 1 left stick X (-128..127).
+    int8_t j1_ly;     ///< Player 1 left stick Y.
+    int8_t j1_rx;     ///< Player 1 right stick X.
+    int8_t j1_ry;     ///< Player 1 right stick Y.
+    int8_t j2_lx;     ///< Player 2 left stick X.
+    int8_t j2_ly;     ///< Player 2 left stick Y.
+    int8_t j2_rx;     ///< Player 2 right stick X.
+    int8_t j2_ry;     ///< Player 2 right stick Y.
+    uint8_t _pad[3];
+} gmz_joy_state_t;
+
+/// PS/2 keyboard + mouse state.
+typedef struct {
+    uint32_t frame;       ///< FPGA frame counter when this state was sent.
+    uint8_t order;        ///< Sequence counter within a frame (for dedup).
+    uint8_t mouse_btns;   ///< PS/2 mouse status byte [yo,xo,ys,xs,1,bm,br,bl].
+    uint8_t mouse_x;      ///< Raw PS/2 mouse X movement.
+    uint8_t mouse_y;      ///< Raw PS/2 mouse Y movement.
+    uint8_t mouse_z;      ///< Raw PS/2 mouse Z (scroll wheel).
+    uint8_t _pad[3];
+    uint8_t keys[32];     ///< 256-bit SDL scancode bitfield.
+} gmz_ps2_state_t;
+
+/// Connect to FPGA input stream (joystick/keyboard/mouse on UDP port 32101).
+/// Sends a 1-byte hello to start receiving input state. Returns handle or NULL.
+gmz_input_t gmz_input_bind(const char *host);
+
+/// Close the input connection and free the handle. Null-safe.
+void gmz_input_close(gmz_input_t input);
+
+/// Poll for pending input packets. Returns 1 if new data received, 0 if none.
+int gmz_input_poll(gmz_input_t input);
+
+/// Read the latest joystick state. Null-safe (returns zeroed state).
+gmz_joy_state_t gmz_input_joy(gmz_input_t input);
+
+/// Read the latest PS/2 keyboard + mouse state. Null-safe (returns zeroed state).
+gmz_ps2_state_t gmz_input_ps2(gmz_input_t input);
+
 #ifdef __cplusplus
 }
 #endif

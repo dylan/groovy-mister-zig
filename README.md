@@ -1,12 +1,15 @@
 # GroovyMisterZig
 
-Zig implementation of the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP streaming protocol by [@psakhis](https://github.com/psakhis). With a focus on zero-allocation packet building, non-blocking I/O, and a clean C ABI for integration from Swift, C, C++, or any language with C FFI.
+Zig implementation of the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP streaming protocol by [@psakhis](https://github.com/psakhis). Zero-allocation packet building, non-blocking I/O, and a C ABI for integration from Swift, C, C++, or any language with C FFI.
 
-## Requirements
-
-- [Zig](https://ziglang.org/) 0.15.2+
+- **Video + audio streaming** to MiSTer FPGA over UDP
+- **Input reception** — joystick, PS/2 keyboard, and mouse state from the FPGA
+- **Frame sync primitives** — raster offset, vsync line computation, caller-driven timing
+- **LZ4 + delta compression** — 50-80% bandwidth reduction for slowly-changing content
 
 ## Build
+
+Requires [Zig](https://ziglang.org/) 0.15.2+.
 
 ```bash
 zig build          # produces zig-out/lib/libgroovy-mister.a (static)
@@ -14,124 +17,109 @@ zig build test     # run unit tests
 zig build docs     # generate documentation
 ```
 
-## C API
+## Overview
 
-The library exposes a C API via `include/groovy_mister.h`:
+The library manages two independent UDP channels to the MiSTer FPGA:
 
-| Function | Description |
-|----------|-------------|
-| `gmz_connect` | Connect to FPGA, send CMD_INIT. Returns opaque handle. |
-| `gmz_connect_ex` | Connect with LZ4/delta compression. Pass `GMZ_LZ4_*` mode. |
-| `gmz_disconnect` | Send CMD_CLOSE and free the connection. |
-| `gmz_tick` | Poll for ACKs, return combined FPGA status + health. |
-| `gmz_set_modeline` | Send CMD_SWITCHRES with display timing parameters. |
-| `gmz_submit` | Send a video frame to the FPGA. |
-| `gmz_submit_audio` | Send raw 16-bit PCM audio to the FPGA. |
-| `gmz_wait_sync` | Block until FPGA ACK or timeout. |
-| `gmz_version` | Return library version string (e.g. `"0.1.0"`). |
-| `gmz_version_major` | Return library major version number. |
-| `gmz_version_minor` | Return library minor version number. |
-| `gmz_raster_offset_ns` | Get raster time offset (ns) for frame pacing. |
-| `gmz_calc_vsync` | Compute optimal vsync scanline for next submission. |
-| `gmz_frame_time_ns` | Get frame period in nanoseconds from modeline. |
-| `gmz_version_patch` | Return library patch version number. |
+**Video/audio (port 32100)** — PC sends frames to the FPGA. Connect, set a modeline (display timing), then submit frames in a loop. The FPGA sends ACKs back with status (current scanline, VRAM readiness, frame counters) which drive your sync decisions.
 
-### Types
+**Input (port 32101)** — FPGA sends joystick, keyboard, and mouse state to the PC. Optional — many users only stream video. Send a 1-byte hello to start receiving, then poll for packets. Input has its own handle with an independent lifecycle.
 
-- `gmz_conn_t` -- Opaque connection handle
-- `gmz_modeline_t` -- Display timing parameters (pixel clock, h/v active/blank/sync/total, interlace)
-- `gmz_state_t` -- Combined FPGA status + health metrics (frame counters, VRAM state, sync stats)
-
-### LZ4 Mode Constants
-
-| Constant | Value | Description |
-|----------|-------|-------------|
-| `GMZ_LZ4_OFF` | 0 | No compression |
-| `GMZ_LZ4` | 1 | LZ4 block compression |
-| `GMZ_LZ4_DELTA` | 2 | LZ4 + delta frame encoding (XOR) |
-| `GMZ_LZ4_HC` | 3 | LZ4 high-compression |
-| `GMZ_LZ4_HC_DELTA` | 4 | LZ4 HC + delta |
-| `GMZ_LZ4_ADAPTIVE` | 5 | Adaptive LZ4 |
-| `GMZ_LZ4_ADAPTIVE_DELTA` | 6 | Adaptive LZ4 + delta |
+The library is deliberately non-opinionated about timing. It exposes pure primitives (`gmz_calc_vsync`, `gmz_raster_offset_ns`, `gmz_frame_time_ns`) and lets the caller own the sync loop. This means you can integrate it into any run loop — a game engine tick, a display link callback, a bare `while` loop — without fighting the library's assumptions.
 
 ## Usage
 
-### C / C++
+### Video Streaming
+
+The basic flow: connect → set modeline → submit frames.
+
+**C / C++**
 
 ```c
 #include "groovy_mister.h"
 
-// Basic connection (no compression)
-gmz_conn_t conn = gmz_connect("192.168.1.123", 1470, 0, 3, 2);
+// Connect with delta compression (or gmz_connect() without)
+gmz_conn_t conn = gmz_connect_ex("192.168.1.123", 1470, 0, 3, 2, GMZ_LZ4_DELTA);
 
-// With delta frame encoding (50-80% bandwidth reduction)
-gmz_conn_t conn_delta = gmz_connect_ex("192.168.1.123", 1470, 0, 3, 2, GMZ_LZ4_DELTA);
+// Set display timing (320x240 @ 60Hz)
+gmz_modeline_t m = {
+    .pixel_clock = 6.7,
+    .h_active = 320, .h_begin = 336, .h_end = 368, .h_total = 426,
+    .v_active = 240, .v_begin = 244, .v_end = 247, .v_total = 262,
+};
+gmz_set_modeline(conn, &m);
 
-// Query library version
-printf("GroovyMisterZig v%s\n", gmz_version());
+// Frame loop
+while (running) {
+    gmz_state_t state = gmz_tick(conn);
+    if (state.vram_ready) {
+        uint16_t vsync = gmz_calc_vsync(conn, 2000000, emulation_ns, stream_ns);
+        gmz_submit(conn, data, len, frame, 0, vsync, 0.0);
+    }
+}
 
-// ... set modeline, submit frames ...
 gmz_disconnect(conn);
 ```
 
-Link with `-lgroovy-mister` and add the `include/` directory to your header search path.
-
-### Swift (via module map)
-
-The `include/module.modulemap` enables direct import:
+**Swift**
 
 ```swift
 import GroovyMisterZig
 
-// Basic connection
-let conn = gmz_connect("192.168.1.123", 1470, 0, 3, 2)
+guard let conn = gmz_connect_ex("192.168.1.123", 1470, 0, 3, 2,
+                                 UInt8(GMZ_LZ4_DELTA)) else {
+    fatalError("Failed to connect to FPGA")
+}
+defer { gmz_disconnect(conn) }
 
-// With delta frame encoding
-let conn_delta = gmz_connect_ex("192.168.1.123", 1470, 0, 3, 2, UInt8(GMZ_LZ4_DELTA))
+var modeline = gmz_modeline_t()
+modeline.pixel_clock = 6.7
+modeline.h_active = 320; modeline.h_begin = 336
+modeline.h_end = 368;    modeline.h_total = 426
+modeline.v_active = 240; modeline.v_begin = 244
+modeline.v_end = 247;    modeline.v_total = 262
+gmz_set_modeline(conn, &modeline)
 
-// Query library version
-let version = String(cString: gmz_version())
-
-// ... set modeline, submit frames ...
-gmz_disconnect(conn)
+// Frame loop
+let state = gmz_tick(conn)
+if state.vram_ready != 0 {
+    let vsync = gmz_calc_vsync(conn, 2_000_000, emulationNs, streamNs)
+    frameData.withUnsafeBytes { buf in
+        gmz_submit(conn, buf.baseAddress!, buf.count, frameNum, 0, vsync, 0)
+    }
+}
 ```
 
-Xcode build settings:
-- `LIBRARY_SEARCH_PATHS = $(SRCROOT)/GroovyMisterZig/zig-out/lib`
-- `SWIFT_INCLUDE_PATHS = $(SRCROOT)/GroovyMisterZig/include`
-- `OTHER_LDFLAGS = -lgroovy-mister`
-
-### Zig
+**Zig**
 
 ```zig
 const gmz = @import("groovy_mister");
+
+var conn = try gmz.Connection.open(.{
+    .host = "192.168.1.123",
+    .mtu = 1470,
+    .rgb_mode = .bgr888,
+    .sound_rate = .rate_48000,
+    .sound_channels = .stereo,
+    .lz4_mode = .lz4_delta,
+    .compressor = gmz.delta.compressor(&delta_state, compress_buf),
+});
+defer conn.close();
+
+try conn.switchRes(.{
+    .pixel_clock = 6.7,
+    .h_active = 320, .h_begin = 336, .h_end = 368, .h_total = 426,
+    .v_active = 240, .v_begin = 244, .v_end = 247, .v_total = 262,
+    .interlaced = false,
+});
+
+// Frame loop
+conn.poll();
+const status = conn.fpgaStatus();
+if (status.vram_ready) {
+    try conn.sendFrame(frame_data, .{ .frame_num = frame, .vsync_line = vsync });
+}
 ```
-
-## Architecture
-
-```
-src/
-  root.zig        -- library root, re-exports public API
-  protocol.zig    -- UDP protocol: commands, packet builders, ACK parsing
-  Connection.zig  -- non-blocking UDP socket, frame chunking, poll()-based sync
-  Health.zig      -- 128-sample rolling window for sync/VRAM metrics
-  lz4.zig         -- LZ4 block compression wrapper
-  delta.zig       -- delta frame encoding: XOR successive frames + LZ4
-  version.zig     -- library version from build.zig.zon
-  c_api.zig       -- C ABI function exports
-
-include/
-  groovy_mister.h    -- C header
-  module.modulemap   -- Clang module map for Swift
-```
-
-## TODO
-
-- [x] **LZ4 compression** — Wired up via `gmz_connect_ex()` with `GMZ_LZ4` mode.
-- [ ] **Input support** — Joystick/PS2 keyboard/mouse feedback from FPGA (second UDP socket). Required for interactive applications.
-- [x] **Precise CRT sync** — Pure timing primitives: `gmz_frame_time_ns()`, `gmz_raster_offset_ns()`, `gmz_calc_vsync()`. Caller-driven sync loop.
-- [x] **Delta frame encoding** — XOR successive frames + LZ4 compression. 50-80% bandwidth reduction for slowly-changing content. Use `GMZ_LZ4_DELTA` mode.
-- [x] **Library version** — `gmz_version()` returns the version string; `gmz_version_major/minor/patch()` for programmatic access.
 
 ### Frame Sync
 
@@ -142,8 +130,8 @@ The library exposes pure timing primitives — the caller owns the sync loop:
 uint64_t frame_ns = gmz_frame_time_ns(conn);
 
 // Each frame:
-// 1. Emulate frame, measure emulation_ns
-// 2. Compute optimal vsync line (2ms margin)
+// 1. Emulate/render frame, measure emulation_ns
+// 2. Compute optimal vsync line (2ms safety margin)
 uint16_t vsync = gmz_calc_vsync(conn, 2000000, emulation_ns, stream_ns);
 // 3. Submit frame at the computed vsync line
 gmz_submit(conn, data, len, frame, 0, vsync, 0.0);
@@ -151,6 +139,164 @@ gmz_submit(conn, data, len, frame, 0, vsync, 0.0);
 // 5. Optionally read raster offset to fine-tune timing:
 int32_t offset_ns = gmz_raster_offset_ns(conn, frame);
 ```
+
+`gmz_calc_vsync` accounts for network latency (measured from ACK round-trips), emulation time, and streaming time to place the vsync line so the frame arrives just before the CRT beam reaches it. `gmz_raster_offset_ns` tells you how far off you were — positive means the FPGA is behind (you have headroom), negative means you're late.
+
+### Input
+
+Input is optional and runs on a separate UDP port (32101) with its own handle. The FPGA reads locally-connected USB joysticks, keyboards, and mice, then streams their state to the PC.
+
+**C / C++**
+
+```c
+gmz_input_t input = gmz_input_bind("192.168.1.123");
+
+// In your frame loop:
+gmz_input_poll(input);
+
+gmz_joy_state_t joy = gmz_input_joy(input);
+if (joy.joy1 & GMZ_JOY_B1) { /* player 1 pressed button 1 */ }
+
+gmz_ps2_state_t ps2 = gmz_input_ps2(input);
+// Check SDL scancode 4 (key 'A'):
+if (ps2.keys[4 / 8] & (1 << (4 % 8))) { /* A is pressed */ }
+
+gmz_input_close(input);
+```
+
+**Swift**
+
+```swift
+import GroovyMisterZig
+
+guard let input = gmz_input_bind("192.168.1.123") else {
+    fatalError("Failed to bind input")
+}
+defer { gmz_input_close(input) }
+
+gmz_input_poll(input)
+
+let joy = gmz_input_joy(input)
+if joy.joy1 & UInt16(GMZ_JOY_B1) != 0 { /* player 1 pressed button 1 */ }
+if joy.j1_lx < -64 { /* left stick pushed left */ }
+
+let ps2 = gmz_input_ps2(input)
+let scancode: UInt8 = 4  // SDL scancode for 'A'
+if ps2.keys[Int(scancode / 8)] & (1 << (scancode % 8)) != 0 { /* A pressed */ }
+```
+
+**Zig**
+
+```zig
+const gmz = @import("groovy_mister");
+const Input = gmz.Input;
+
+var input = try Input.bind("192.168.1.123");
+defer input.close();
+
+if (input.poll()) {
+    const joy = input.joyState();
+    if (joy.joy1 & Input.JoyButton.b1 != 0) { /* player 1 pressed button 1 */ }
+    if (joy.j1_lx < -64) { /* left stick pushed left */ }
+
+    const ps2 = input.ps2State();
+    if (Input.isKeyPressed(&ps2.keys, 4)) { /* SDL scancode 4 = 'A' */ }
+}
+```
+
+### Compression
+
+Pass an `LZ4` mode to `gmz_connect_ex` (C/Swift) or set `.lz4_mode` on `Connection.Config` (Zig). Delta modes XOR successive frames before compressing, which is very effective for slowly-changing content (menus, pixel art, retro games).
+
+| Mode | Description |
+|------|-------------|
+| `GMZ_LZ4` | LZ4 block compression |
+| `GMZ_LZ4_DELTA` | LZ4 + delta frame encoding (XOR) |
+| `GMZ_LZ4_HC` | LZ4 high-compression (slower, smaller) |
+| `GMZ_LZ4_HC_DELTA` | LZ4 HC + delta |
+| `GMZ_LZ4_ADAPTIVE` | Adaptive (switches between fast/HC per frame) |
+| `GMZ_LZ4_ADAPTIVE_DELTA` | Adaptive + delta |
+
+### Linking
+
+**C / C++**: Link with `-lgroovy-mister` and add `include/` to your header search path.
+
+**Swift / Xcode**: The `include/module.modulemap` enables `import GroovyMisterZig`:
+- `LIBRARY_SEARCH_PATHS = $(SRCROOT)/GroovyMisterZig/zig-out/lib`
+- `SWIFT_INCLUDE_PATHS = $(SRCROOT)/GroovyMisterZig/include`
+- `OTHER_LDFLAGS = -lgroovy-mister`
+
+**Zig**: `const gmz = @import("groovy_mister");`
+
+## Architecture
+
+```
+src/
+  root.zig        -- library root, re-exports public API
+  protocol.zig    -- UDP protocol: commands, packet builders, ACK parsing
+  Connection.zig  -- non-blocking UDP socket, frame chunking, poll()-based sync
+  Input.zig       -- FPGA input reception: joystick/keyboard/mouse (UDP 32101)
+  Health.zig      -- 128-sample rolling window for sync/VRAM metrics
+  lz4.zig         -- LZ4 block compression wrapper
+  delta.zig       -- delta frame encoding: XOR successive frames + LZ4
+  version.zig     -- library version from build.zig.zon
+  sync.zig        -- CRT sync primitives: frame timing, raster offset, vsync
+  c_api.zig       -- C ABI function exports
+
+include/
+  groovy_mister.h    -- C header
+  module.modulemap   -- Clang module map for Swift
+```
+
+## API Reference
+
+### Functions
+
+| Function | Description |
+|----------|-------------|
+| **Connection** | |
+| `gmz_connect` | Connect to FPGA, send CMD_INIT. Returns opaque handle. |
+| `gmz_connect_ex` | Connect with LZ4/delta compression. Pass `GMZ_LZ4_*` mode. |
+| `gmz_disconnect` | Send CMD_CLOSE and free the connection. |
+| **Streaming** | |
+| `gmz_tick` | Poll for ACKs, return combined FPGA status + health. |
+| `gmz_set_modeline` | Send CMD_SWITCHRES with display timing parameters. |
+| `gmz_submit` | Send a video frame to the FPGA. |
+| `gmz_submit_audio` | Send raw 16-bit PCM audio to the FPGA. |
+| `gmz_wait_sync` | Block until FPGA ACK or timeout. |
+| **Frame sync** | |
+| `gmz_frame_time_ns` | Get frame period in nanoseconds from modeline. |
+| `gmz_raster_offset_ns` | Get raster time offset (ns) for frame pacing. |
+| `gmz_calc_vsync` | Compute optimal vsync scanline for next submission. |
+| **Input** | |
+| `gmz_input_bind` | Connect to FPGA input stream (UDP 32101). Returns handle. |
+| `gmz_input_close` | Close input connection and free handle. |
+| `gmz_input_poll` | Poll for pending input packets. Returns 1 if new data. |
+| `gmz_input_joy` | Read latest joystick state (digital + analog). |
+| `gmz_input_ps2` | Read latest PS/2 keyboard + mouse state. |
+| **Version** | |
+| `gmz_version` | Return library version string (e.g. `"0.1.0"`). |
+| `gmz_version_major` | Return major version number. |
+| `gmz_version_minor` | Return minor version number. |
+| `gmz_version_patch` | Return patch version number. |
+
+### Types
+
+- `gmz_conn_t` -- Opaque connection handle
+- `gmz_input_t` -- Opaque input handle (joystick/keyboard/mouse)
+- `gmz_modeline_t` -- Display timing parameters (pixel clock, h/v active/blank/sync/total, interlace)
+- `gmz_state_t` -- Combined FPGA status + health metrics (frame counters, VRAM state, sync stats)
+- `gmz_joy_state_t` -- Joystick state (digital buttons + analog axes)
+- `gmz_ps2_state_t` -- PS/2 keyboard + mouse state (256-bit scancode bitfield + raw mouse)
+
+### Joystick Button Constants
+
+| Constant | Value | | Constant | Value |
+|----------|-------|-|----------|-------|
+| `GMZ_JOY_RIGHT` | 0x0001 | | `GMZ_JOY_B1` | 0x0010 |
+| `GMZ_JOY_LEFT` | 0x0002 | | `GMZ_JOY_B2` | 0x0020 |
+| `GMZ_JOY_DOWN` | 0x0004 | | `GMZ_JOY_B3`–`GMZ_JOY_B6` | 0x0040–0x0200 |
+| `GMZ_JOY_UP` | 0x0008 | | `GMZ_JOY_B7`–`GMZ_JOY_B10` | 0x0400–0x2000 |
 
 ## License
 

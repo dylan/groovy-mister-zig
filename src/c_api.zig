@@ -1,5 +1,6 @@
 const std = @import("std");
 const Connection = @import("Connection.zig");
+const Input = @import("Input.zig");
 const protocol = @import("protocol.zig");
 const Health = @import("Health.zig");
 const lz4 = @import("lz4.zig");
@@ -7,7 +8,11 @@ const delta = @import("delta.zig");
 const version_info = @import("version.zig");
 const sync = @import("sync.zig");
 
-// --- Internal handle ---
+// --- Internal handles ---
+
+const InputHandle = struct {
+    input: Input,
+};
 
 const ConnHandle = struct {
     conn: Connection,
@@ -60,6 +65,35 @@ pub const gmz_state_t = extern struct {
     p95_sync_wait_ms: f64 = 0,
     vram_ready_rate: f64 = 1.0,
     stall_threshold_ms: f64 = 0,
+};
+
+/// Joystick state returned by `gmz_input_joy`.
+pub const gmz_joy_state_t = extern struct {
+    frame: u32 = 0,
+    joy1: u16 = 0,
+    joy2: u16 = 0,
+    order: u8 = 0,
+    j1_lx: i8 = 0,
+    j1_ly: i8 = 0,
+    j1_rx: i8 = 0,
+    j1_ry: i8 = 0,
+    j2_lx: i8 = 0,
+    j2_ly: i8 = 0,
+    j2_rx: i8 = 0,
+    j2_ry: i8 = 0,
+    _pad: [3]u8 = .{0} ** 3,
+};
+
+/// PS/2 keyboard + mouse state returned by `gmz_input_ps2`.
+pub const gmz_ps2_state_t = extern struct {
+    frame: u32 = 0,
+    order: u8 = 0,
+    mouse_btns: u8 = 0,
+    mouse_x: u8 = 0,
+    mouse_y: u8 = 0,
+    mouse_z: u8 = 0,
+    _pad: [3]u8 = .{0} ** 3,
+    keys: [32]u8 = .{0} ** 32,
 };
 
 // --- Exported functions ---
@@ -338,6 +372,69 @@ pub export fn gmz_frame_time_ns(conn: ?*ConnHandle) callconv(.c) u64 {
     return timing.frame_time_ns;
 }
 
+// --- Input exports ---
+
+/// Connect to FPGA input stream on UDP port 32101. Returns handle or null.
+pub export fn gmz_input_bind(host: [*:0]const u8) callconv(.c) ?*InputHandle {
+    const host_slice = std.mem.span(host);
+    const handle = std.heap.c_allocator.create(InputHandle) catch return null;
+    handle.* = .{
+        .input = Input.bind(host_slice) catch {
+            std.heap.c_allocator.destroy(handle);
+            return null;
+        },
+    };
+    return handle;
+}
+
+/// Close input connection and free handle. Null-safe.
+pub export fn gmz_input_close(handle: ?*InputHandle) callconv(.c) void {
+    const h = handle orelse return;
+    h.input.close();
+    std.heap.c_allocator.destroy(h);
+}
+
+/// Poll for pending input packets. Returns 1 if new data, 0 if none. Null-safe.
+pub export fn gmz_input_poll(handle: ?*InputHandle) callconv(.c) c_int {
+    const h = handle orelse return 0;
+    return if (h.input.poll()) 1 else 0;
+}
+
+/// Read latest joystick state. Null-safe (returns zeroed state).
+pub export fn gmz_input_joy(handle: ?*InputHandle) callconv(.c) gmz_joy_state_t {
+    const h = handle orelse return .{};
+    const s = h.input.joyState();
+    return .{
+        .frame = s.frame,
+        .joy1 = s.joy1,
+        .joy2 = s.joy2,
+        .order = s.order,
+        .j1_lx = s.j1_lx,
+        .j1_ly = s.j1_ly,
+        .j1_rx = s.j1_rx,
+        .j1_ry = s.j1_ry,
+        .j2_lx = s.j2_lx,
+        .j2_ly = s.j2_ly,
+        .j2_rx = s.j2_rx,
+        .j2_ry = s.j2_ry,
+    };
+}
+
+/// Read latest PS/2 keyboard + mouse state. Null-safe (returns zeroed state).
+pub export fn gmz_input_ps2(handle: ?*InputHandle) callconv(.c) gmz_ps2_state_t {
+    const h = handle orelse return .{};
+    const s = h.input.ps2State();
+    return .{
+        .frame = s.frame,
+        .order = s.order,
+        .keys = s.keys,
+        .mouse_btns = s.mouse_btns,
+        .mouse_x = s.mouse_x,
+        .mouse_y = s.mouse_y,
+        .mouse_z = s.mouse_z,
+    };
+}
+
 // --- Tests ---
 
 test "ConnHandle.periodMs with modeline" {
@@ -495,4 +592,58 @@ test "gmz_version_major/minor/patch" {
     try std.testing.expectEqual(@as(u32, 0), gmz_version_major());
     try std.testing.expectEqual(@as(u32, 1), gmz_version_minor());
     try std.testing.expectEqual(@as(u32, 0), gmz_version_patch());
+}
+
+// --- Input tests ---
+
+test "null handle safety: gmz_input_close" {
+    gmz_input_close(null);
+}
+
+test "null handle safety: gmz_input_poll" {
+    try std.testing.expectEqual(@as(c_int, 0), gmz_input_poll(null));
+}
+
+test "null handle safety: gmz_input_joy" {
+    const joy = gmz_input_joy(null);
+    try std.testing.expectEqual(@as(u32, 0), joy.frame);
+    try std.testing.expectEqual(@as(u16, 0), joy.joy1);
+}
+
+test "null handle safety: gmz_input_ps2" {
+    const ps2 = gmz_input_ps2(null);
+    try std.testing.expectEqual(@as(u32, 0), ps2.frame);
+    try std.testing.expectEqual(@as(u8, 0), ps2.mouse_btns);
+}
+
+test "gmz_joy_state_t field layout" {
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(gmz_joy_state_t, "frame"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(gmz_joy_state_t, "joy1"));
+    try std.testing.expectEqual(@as(usize, 6), @offsetOf(gmz_joy_state_t, "joy2"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(gmz_joy_state_t, "order"));
+    try std.testing.expectEqual(@as(usize, 9), @offsetOf(gmz_joy_state_t, "j1_lx"));
+    try std.testing.expectEqual(@as(usize, 10), @offsetOf(gmz_joy_state_t, "j1_ly"));
+    try std.testing.expectEqual(@as(usize, 11), @offsetOf(gmz_joy_state_t, "j1_rx"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(gmz_joy_state_t, "j1_ry"));
+    try std.testing.expectEqual(@as(usize, 13), @offsetOf(gmz_joy_state_t, "j2_lx"));
+    try std.testing.expectEqual(@as(usize, 14), @offsetOf(gmz_joy_state_t, "j2_ly"));
+    try std.testing.expectEqual(@as(usize, 15), @offsetOf(gmz_joy_state_t, "j2_rx"));
+    try std.testing.expectEqual(@as(usize, 16), @offsetOf(gmz_joy_state_t, "j2_ry"));
+    try std.testing.expectEqual(@as(usize, 20), @sizeOf(gmz_joy_state_t));
+}
+
+test "gmz_ps2_state_t field layout" {
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(gmz_ps2_state_t, "frame"));
+    try std.testing.expectEqual(@as(usize, 4), @offsetOf(gmz_ps2_state_t, "order"));
+    try std.testing.expectEqual(@as(usize, 5), @offsetOf(gmz_ps2_state_t, "mouse_btns"));
+    try std.testing.expectEqual(@as(usize, 6), @offsetOf(gmz_ps2_state_t, "mouse_x"));
+    try std.testing.expectEqual(@as(usize, 7), @offsetOf(gmz_ps2_state_t, "mouse_y"));
+    try std.testing.expectEqual(@as(usize, 8), @offsetOf(gmz_ps2_state_t, "mouse_z"));
+    try std.testing.expectEqual(@as(usize, 12), @offsetOf(gmz_ps2_state_t, "keys"));
+    try std.testing.expectEqual(@as(usize, 44), @sizeOf(gmz_ps2_state_t));
+}
+
+test "gmz_input_bind and close on loopback" {
+    const handle = gmz_input_bind("127.0.0.1");
+    if (handle) |h| gmz_input_close(h);
 }
