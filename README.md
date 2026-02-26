@@ -31,6 +31,9 @@ The library exposes a C API via `include/groovy_mister.h`:
 | `gmz_version` | Return library version string (e.g. `"0.1.0"`). |
 | `gmz_version_major` | Return library major version number. |
 | `gmz_version_minor` | Return library minor version number. |
+| `gmz_raster_offset_ns` | Get raster time offset (ns) for frame pacing. |
+| `gmz_calc_vsync` | Compute optimal vsync scanline for next submission. |
+| `gmz_frame_time_ns` | Get frame period in nanoseconds from modeline. |
 | `gmz_version_patch` | Return library patch version number. |
 
 ### Types
@@ -126,9 +129,28 @@ include/
 
 - [x] **LZ4 compression** — Wired up via `gmz_connect_ex()` with `GMZ_LZ4` mode.
 - [ ] **Input support** — Joystick/PS2 keyboard/mouse feedback from FPGA (second UDP socket). Required for interactive applications.
-- [ ] **Precise CRT sync** — Nanosecond raster offset (`diffTimeRaster`) and frame margin parameter for tear-free output.
+- [x] **Precise CRT sync** — Pure timing primitives: `gmz_frame_time_ns()`, `gmz_raster_offset_ns()`, `gmz_calc_vsync()`. Caller-driven sync loop.
 - [x] **Delta frame encoding** — XOR successive frames + LZ4 compression. 50-80% bandwidth reduction for slowly-changing content. Use `GMZ_LZ4_DELTA` mode.
 - [x] **Library version** — `gmz_version()` returns the version string; `gmz_version_major/minor/patch()` for programmatic access.
+
+### Frame Sync
+
+The library exposes pure timing primitives — the caller owns the sync loop:
+
+```c
+// After setting a modeline:
+uint64_t frame_ns = gmz_frame_time_ns(conn);
+
+// Each frame:
+// 1. Emulate frame, measure emulation_ns
+// 2. Compute optimal vsync line (2ms margin)
+uint16_t vsync = gmz_calc_vsync(conn, 2000000, emulation_ns, stream_ns);
+// 3. Submit frame at the computed vsync line
+gmz_submit(conn, data, len, frame, 0, vsync, 0.0);
+// 4. Caller sleeps/yields for remaining frame budget
+// 5. Optionally read raster offset to fine-tune timing:
+int32_t offset_ns = gmz_raster_offset_ns(conn, frame);
+```
 
 ## License
 

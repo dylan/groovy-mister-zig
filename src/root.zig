@@ -21,6 +21,8 @@ pub const lz4 = @import("lz4.zig");
 pub const delta = @import("delta.zig");
 /// Library version from build.zig.zon.
 pub const version = @import("version.zig");
+/// CRT sync primitives: frame timing, raster offset, vsync line computation.
+pub const sync = @import("sync.zig");
 /// C ABI exports: `gmz_connect`, `gmz_disconnect`, `gmz_tick`, `gmz_set_modeline`, `gmz_submit`, `gmz_submit_audio`, `gmz_wait_sync`, `gmz_connect_ex`.
 pub const c_api = @import("c_api.zig");
 
@@ -38,6 +40,9 @@ comptime {
     _ = &c_api.gmz_version_major;
     _ = &c_api.gmz_version_minor;
     _ = &c_api.gmz_version_patch;
+    _ = &c_api.gmz_raster_offset_ns;
+    _ = &c_api.gmz_calc_vsync;
+    _ = &c_api.gmz_frame_time_ns;
 }
 
 test {
@@ -47,5 +52,6 @@ test {
     _ = lz4;
     _ = delta;
     _ = version;
+    _ = sync;
     _ = c_api;
 }

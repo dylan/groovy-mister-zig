@@ -104,6 +104,22 @@ uint32_t gmz_version_minor(void);
 /// Return the library patch version number.
 uint32_t gmz_version_patch(void);
 
+/// Get raster time offset in nanoseconds for the given submitted frame.
+/// Positive = FPGA is behind (need to wait), negative = running late.
+/// Calls poll() internally to get latest ACK. Returns 0 if no modeline set.
+int32_t gmz_raster_offset_ns(gmz_conn_t conn, uint32_t submitted_frame);
+
+/// Compute optimal vsync line for next frame submission.
+/// margin_ns: safety margin in nanoseconds (e.g. 2000000 for 2ms).
+/// emulation_ns: time spent generating this frame (nanoseconds).
+/// stream_ns: time spent transmitting last frame (nanoseconds).
+/// Returns target scanline, or v_total/2 if no modeline set.
+uint16_t gmz_calc_vsync(gmz_conn_t conn, uint32_t margin_ns,
+                         uint64_t emulation_ns, uint64_t stream_ns);
+
+/// Get frame period in nanoseconds from current modeline. 0 if no modeline set.
+uint64_t gmz_frame_time_ns(gmz_conn_t conn);
+
 #ifdef __cplusplus
 }
 #endif

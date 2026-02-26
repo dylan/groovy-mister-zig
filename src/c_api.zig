@@ -5,12 +5,14 @@ const Health = @import("Health.zig");
 const lz4 = @import("lz4.zig");
 const delta = @import("delta.zig");
 const version_info = @import("version.zig");
+const sync = @import("sync.zig");
 
 // --- Internal handle ---
 
 const ConnHandle = struct {
     conn: Connection,
     modeline: ?protocol.Modeline = null,
+    timing: ?sync.FrameTiming = null,
     compress_buf: ?[]u8 = null,
     delta_state: ?*delta.DeltaState = null,
     delta_buf: ?[]u8 = null,
@@ -247,6 +249,7 @@ pub export fn gmz_set_modeline(conn: ?*ConnHandle, m: *const gmz_modeline_t) cal
         .interlaced = m.interlaced != 0,
     };
     handle.modeline = modeline;
+    handle.timing = sync.frameTiming(modeline);
     handle.conn.switchRes(modeline) catch return -1;
     return 0;
 }
@@ -305,6 +308,34 @@ pub export fn gmz_version_minor() callconv(.c) u32 {
 /// Return the library patch version number.
 pub export fn gmz_version_patch() callconv(.c) u32 {
     return @intCast(version_info.version.patch);
+}
+
+/// Get raster time offset in nanoseconds for the given submitted frame.
+/// Polls for the latest ACK internally. Returns 0 if no modeline set.
+pub export fn gmz_raster_offset_ns(conn: ?*ConnHandle, submitted_frame: u32) callconv(.c) i32 {
+    const handle = conn orelse return 0;
+    const timing = handle.timing orelse return 0;
+    handle.conn.poll();
+    const offset = sync.rasterOffsetNs(timing, handle.conn.fpgaStatus(), submitted_frame);
+    return std.math.lossyCast(i32, offset);
+}
+
+/// Compute optimal vsync line for next frame submission.
+/// Returns v_total/2 if no modeline set (safe default).
+pub export fn gmz_calc_vsync(conn: ?*ConnHandle, margin_ns: u32, emulation_ns: u64, stream_ns: u64) callconv(.c) u16 {
+    const handle = conn orelse return 0;
+    const timing = handle.timing orelse return if (handle.modeline) |m| m.v_total / 2 else 262;
+    // Use last measured health for ping estimate (avg_sync_wait * 1e6 to convert ms -> ns).
+    const h = handle.conn.getHealth();
+    const ping_ns: u64 = @intFromFloat(@round(h.avg_sync_wait_ms * 1_000_000.0));
+    return sync.calcVsyncLine(timing, ping_ns, @intCast(margin_ns), emulation_ns, stream_ns);
+}
+
+/// Get frame period in nanoseconds from current modeline. 0 if no modeline set.
+pub export fn gmz_frame_time_ns(conn: ?*ConnHandle) callconv(.c) u64 {
+    const handle = conn orelse return 0;
+    const timing = handle.timing orelse return 0;
+    return timing.frame_time_ns;
 }
 
 // --- Tests ---
@@ -412,6 +443,18 @@ test "null handle safety: gmz_submit_audio" {
 
 test "null handle safety: gmz_wait_sync" {
     try std.testing.expectEqual(@as(c_int, -1), gmz_wait_sync(null, 10));
+}
+
+test "null handle safety: gmz_raster_offset_ns" {
+    try std.testing.expectEqual(@as(i32, 0), gmz_raster_offset_ns(null, 1));
+}
+
+test "null handle safety: gmz_calc_vsync" {
+    try std.testing.expectEqual(@as(u16, 0), gmz_calc_vsync(null, 0, 0, 0));
+}
+
+test "null handle safety: gmz_frame_time_ns" {
+    try std.testing.expectEqual(@as(u64, 0), gmz_frame_time_ns(null));
 }
 
 test "gmz_connect_ex without lz4 behaves like gmz_connect" {
