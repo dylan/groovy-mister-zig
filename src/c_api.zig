@@ -2,12 +2,19 @@ const std = @import("std");
 const Connection = @import("Connection.zig");
 const protocol = @import("protocol.zig");
 const Health = @import("Health.zig");
+const lz4 = @import("lz4.zig");
+const delta = @import("delta.zig");
+const version_info = @import("version.zig");
 
 // --- Internal handle ---
 
 const ConnHandle = struct {
     conn: Connection,
     modeline: ?protocol.Modeline = null,
+    compress_buf: ?[]u8 = null,
+    delta_state: ?*delta.DeltaState = null,
+    delta_buf: ?[]u8 = null,
+    prev_frame: ?[]u8 = null,
 
     fn periodMs(self: *const ConnHandle) f64 {
         const m = self.modeline orelse return 16.7;
@@ -86,9 +93,112 @@ pub export fn gmz_connect(host: [*:0]const u8, mtu: u16, rgb_mode: u8, sound_rat
     return handle;
 }
 
+/// Open a UDP connection with optional LZ4 compression and send CMD_INIT.
+/// When `lz4_mode` > 0, allocates a compression buffer and configures the
+/// LZ4 compressor. Returns an opaque handle, or null on failure.
+pub export fn gmz_connect_ex(host: [*:0]const u8, mtu: u16, rgb_mode: u8, sound_rate: u8, sound_channels: u8, lz4_mode: u8) callconv(.c) ?*ConnHandle {
+    const host_slice = std.mem.span(host);
+    const mode: protocol.RgbMode = std.meta.intToEnum(protocol.RgbMode, rgb_mode) catch return null;
+    const rate: protocol.SoundRate = std.meta.intToEnum(protocol.SoundRate, sound_rate) catch return null;
+    const channels: protocol.SoundChannels = std.meta.intToEnum(protocol.SoundChannels, sound_channels) catch return null;
+    const handle = std.heap.c_allocator.create(ConnHandle) catch return null;
+
+    const lz4_enum: protocol.Lz4Mode = std.meta.intToEnum(protocol.Lz4Mode, lz4_mode) catch return null;
+
+    // Max frame size: generous 2MB covering up to ~800x600 BGR888
+    const max_frame_size = 2 * 1024 * 1024;
+
+    var compressor_val: ?Connection.Compressor = null;
+    var compress_buf: ?[]u8 = null;
+    var delta_state_ptr: ?*delta.DeltaState = null;
+    var delta_buf_alloc: ?[]u8 = null;
+    var prev_frame_alloc: ?[]u8 = null;
+
+    if (lz4_mode > 0) {
+        const buf = std.heap.c_allocator.alloc(u8, lz4.compressBound(max_frame_size)) catch {
+            std.heap.c_allocator.destroy(handle);
+            return null;
+        };
+        compress_buf = buf;
+
+        // Delta modes: lz4_delta(2), lz4_hc_delta(4), adaptive_delta(6)
+        const is_delta = (lz4_mode == 2 or lz4_mode == 4 or lz4_mode == 6);
+        if (is_delta) {
+            const pf = std.heap.c_allocator.alloc(u8, max_frame_size) catch {
+                std.heap.c_allocator.free(buf);
+                std.heap.c_allocator.destroy(handle);
+                return null;
+            };
+            prev_frame_alloc = pf;
+
+            const db = std.heap.c_allocator.alloc(u8, max_frame_size) catch {
+                std.heap.c_allocator.free(pf);
+                std.heap.c_allocator.free(buf);
+                std.heap.c_allocator.destroy(handle);
+                return null;
+            };
+            delta_buf_alloc = db;
+
+            const ds = std.heap.c_allocator.create(delta.DeltaState) catch {
+                std.heap.c_allocator.free(db);
+                std.heap.c_allocator.free(pf);
+                std.heap.c_allocator.free(buf);
+                std.heap.c_allocator.destroy(handle);
+                return null;
+            };
+            ds.* = .{
+                .prev_frame = pf,
+                .delta_buf = db,
+            };
+            delta_state_ptr = ds;
+            compressor_val = delta.compressor(ds, buf);
+        } else {
+            compressor_val = lz4.compressor(buf);
+        }
+    }
+
+    handle.* = .{
+        .conn = Connection.open(.{
+            .host = host_slice,
+            .port = 32100,
+            .mtu = mtu,
+            .rgb_mode = mode,
+            .sound_rate = rate,
+            .sound_channels = channels,
+            .compressor = compressor_val,
+            .lz4_mode = lz4_enum,
+        }) catch {
+            if (delta_state_ptr) |ds| std.heap.c_allocator.destroy(ds);
+            if (delta_buf_alloc) |db| std.heap.c_allocator.free(db);
+            if (prev_frame_alloc) |pf| std.heap.c_allocator.free(pf);
+            if (compress_buf) |buf| std.heap.c_allocator.free(buf);
+            std.heap.c_allocator.destroy(handle);
+            return null;
+        },
+        .compress_buf = compress_buf,
+        .delta_state = delta_state_ptr,
+        .delta_buf = delta_buf_alloc,
+        .prev_frame = prev_frame_alloc,
+    };
+    handle.conn.sendInit() catch {
+        if (handle.delta_state) |ds| std.heap.c_allocator.destroy(ds);
+        if (handle.delta_buf) |db| std.heap.c_allocator.free(db);
+        if (handle.prev_frame) |pf| std.heap.c_allocator.free(pf);
+        if (handle.compress_buf) |buf| std.heap.c_allocator.free(buf);
+        handle.conn.close();
+        std.heap.c_allocator.destroy(handle);
+        return null;
+    };
+    return handle;
+}
+
 /// Send CMD_CLOSE, close the socket, and free the handle. Null-safe.
 pub export fn gmz_disconnect(conn: ?*ConnHandle) callconv(.c) void {
     const handle = conn orelse return;
+    if (handle.delta_state) |ds| std.heap.c_allocator.destroy(ds);
+    if (handle.delta_buf) |db| std.heap.c_allocator.free(db);
+    if (handle.prev_frame) |pf| std.heap.c_allocator.free(pf);
+    if (handle.compress_buf) |buf| std.heap.c_allocator.free(buf);
     handle.conn.close();
     std.heap.c_allocator.destroy(handle);
 }
@@ -175,6 +285,26 @@ pub export fn gmz_submit_audio(conn: ?*ConnHandle, data: [*]const u8, len: usize
 pub export fn gmz_wait_sync(conn: ?*ConnHandle, timeout_ms: c_int) callconv(.c) c_int {
     const handle = conn orelse return -1;
     return if (handle.conn.waitSync(timeout_ms)) 0 else 1;
+}
+
+/// Return the library version string (e.g. "0.1.0"). Null-terminated.
+pub export fn gmz_version() callconv(.c) [*:0]const u8 {
+    return version_info.version_string;
+}
+
+/// Return the library major version number.
+pub export fn gmz_version_major() callconv(.c) u32 {
+    return @intCast(version_info.version.major);
+}
+
+/// Return the library minor version number.
+pub export fn gmz_version_minor() callconv(.c) u32 {
+    return @intCast(version_info.version.minor);
+}
+
+/// Return the library patch version number.
+pub export fn gmz_version_patch() callconv(.c) u32 {
+    return @intCast(version_info.version.patch);
 }
 
 // --- Tests ---
@@ -282,4 +412,44 @@ test "null handle safety: gmz_submit_audio" {
 
 test "null handle safety: gmz_wait_sync" {
     try std.testing.expectEqual(@as(c_int, -1), gmz_wait_sync(null, 10));
+}
+
+test "gmz_connect_ex without lz4 behaves like gmz_connect" {
+    const handle = gmz_connect_ex("127.0.0.1", 1500, 0, 0, 0, 0);
+    // May fail to connect (no FPGA) but should not crash
+    if (handle) |h| gmz_disconnect(h);
+}
+
+test "gmz_connect_ex with lz4 enabled" {
+    const handle = gmz_connect_ex("127.0.0.1", 1500, 0, 0, 0, 1);
+    // May fail to connect (no FPGA) but should not crash
+    if (handle) |h| gmz_disconnect(h);
+}
+
+test "gmz_connect_ex with lz4_delta mode" {
+    const handle = gmz_connect_ex("127.0.0.1", 1500, 0, 0, 0, 2);
+    if (handle) |h| {
+        // Delta state should be allocated
+        try std.testing.expect(h.delta_state != null);
+        try std.testing.expect(h.delta_buf != null);
+        try std.testing.expect(h.prev_frame != null);
+        gmz_disconnect(h);
+    }
+}
+
+test "gmz_connect_ex with invalid lz4_mode returns null" {
+    const handle = gmz_connect_ex("127.0.0.1", 1500, 0, 0, 0, 255);
+    try std.testing.expect(handle == null);
+}
+
+test "gmz_version returns non-null string" {
+    const v = gmz_version();
+    try std.testing.expect(v[0] != 0);
+    try std.testing.expectEqualStrings("0.1.0", std.mem.span(v));
+}
+
+test "gmz_version_major/minor/patch" {
+    try std.testing.expectEqual(@as(u32, 0), gmz_version_major());
+    try std.testing.expectEqual(@as(u32, 1), gmz_version_minor());
+    try std.testing.expectEqual(@as(u32, 0), gmz_version_patch());
 }

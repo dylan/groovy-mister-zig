@@ -131,9 +131,10 @@ pub fn parseAck(buf: *const [ack_size]u8) FpgaStatus {
 // No allocation, no I/O.
 
 /// Build CMD_INIT packet (5 bytes).
+/// The FPGA uses the mode value to determine whether to XOR-decode delta frames.
 pub fn buildInitPacket(buf: *[5]u8, lz4_mode: Lz4Mode, sound_rate: SoundRate, sound_channels: SoundChannels, rgb_mode: RgbMode) void {
     buf[0] = @intFromEnum(Command.init);
-    buf[1] = if (@intFromEnum(lz4_mode) > 0) 1 else 0; // FPGA only sees 0=RAW or 1=LZ4
+    buf[1] = @intFromEnum(lz4_mode);
     buf[2] = @intFromEnum(sound_rate);
     buf[3] = @intFromEnum(sound_channels);
     buf[4] = @intFromEnum(rgb_mode);
@@ -174,6 +175,13 @@ pub fn buildBlitHeader(buf: *[8]u8, frame_num: u32, field: u8, vsync_line: u16) 
     std.mem.writeInt(u32, buf[1..5], frame_num, .little);
     buf[5] = field;
     std.mem.writeInt(u16, buf[6..8], vsync_line, .little);
+}
+
+/// Build CMD_BLIT LZ4-compressed frame header (12 bytes).
+/// Same layout as `buildBlitHeader` with `compressed_size` appended at offset 8.
+pub fn buildBlitHeaderLz4(buf: *[12]u8, frame_num: u32, field: u8, vsync_line: u16, compressed_size: u32) void {
+    buildBlitHeader(buf[0..8], frame_num, field, vsync_line);
+    std.mem.writeInt(u32, buf[8..12], compressed_size, .little);
 }
 
 // --- Tests ---
@@ -353,16 +361,22 @@ test "buildInitPacket with LZ4 enabled" {
     var buf: [5]u8 = undefined;
     buildInitPacket(&buf, .lz4, .rate_44100, .mono, .rgb565);
     try std.testing.expectEqual(@as(u8, 2), buf[0]); // CMD_INIT
-    try std.testing.expectEqual(@as(u8, 1), buf[1]); // LZ4 enabled (any non-off mode -> 1)
+    try std.testing.expectEqual(@as(u8, 1), buf[1]); // lz4 mode = 1
     try std.testing.expectEqual(@as(u8, 2), buf[2]); // 44100Hz
     try std.testing.expectEqual(@as(u8, 1), buf[3]); // mono
     try std.testing.expectEqual(@as(u8, 2), buf[4]); // RGB565
 }
 
-test "buildInitPacket with LZ4 adaptive mode maps to 1" {
+test "buildInitPacket with LZ4 delta mode sends actual mode value" {
+    var buf: [5]u8 = undefined;
+    buildInitPacket(&buf, .lz4_delta, .off, .off, .bgr888);
+    try std.testing.expectEqual(@as(u8, 2), buf[1]); // lz4_delta = 2
+}
+
+test "buildInitPacket with adaptive mode sends actual mode value" {
     var buf: [5]u8 = undefined;
     buildInitPacket(&buf, .adaptive, .off, .off, .bgra8888);
-    try std.testing.expectEqual(@as(u8, 1), buf[1]); // any LZ4 variant -> FPGA sees 1
+    try std.testing.expectEqual(@as(u8, 5), buf[1]); // adaptive = 5
     try std.testing.expectEqual(@as(u8, 1), buf[4]); // BGRA8888
 }
 
@@ -398,6 +412,25 @@ test "buildAudioHeader with max u16 bytes" {
     buildAudioHeader(&buf, std.math.maxInt(u16));
     try std.testing.expectEqual(@as(u8, 4), buf[0]); // CMD_AUDIO
     try std.testing.expectEqual(std.math.maxInt(u16), std.mem.readInt(u16, buf[1..3], .little));
+}
+
+test "buildBlitHeaderLz4 format" {
+    var buf: [12]u8 = undefined;
+    buildBlitHeaderLz4(&buf, 42, 0, 203, 9876);
+
+    try std.testing.expectEqual(@as(u8, 7), buf[0]); // CMD_BLIT
+    try std.testing.expectEqual(@as(u32, 42), std.mem.readInt(u32, buf[1..5], .little));
+    try std.testing.expectEqual(@as(u8, 0), buf[5]); // field
+    try std.testing.expectEqual(@as(u16, 203), std.mem.readInt(u16, buf[6..8], .little));
+    try std.testing.expectEqual(@as(u32, 9876), std.mem.readInt(u32, buf[8..12], .little));
+}
+
+test "buildBlitHeaderLz4 first 8 bytes match buildBlitHeader" {
+    var raw: [8]u8 = undefined;
+    var lz4: [12]u8 = undefined;
+    buildBlitHeader(&raw, 999, 1, 500);
+    buildBlitHeaderLz4(&lz4, 999, 1, 500, 4096);
+    try std.testing.expectEqualSlices(u8, &raw, lz4[0..8]);
 }
 
 test "buildInitPacket encodes audio parameters" {

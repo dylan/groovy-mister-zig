@@ -14,15 +14,17 @@ pub const Config = struct {
     sound_rate: protocol.SoundRate = .off,
     sound_channels: protocol.SoundChannels = .off,
     compressor: ?Compressor = null,
+    lz4_mode: protocol.Lz4Mode = .off,
 };
 
 /// Optional LZ4 compressor passed as a function pointer + context.
 pub const Compressor = struct {
-    ctx: *anyopaque,
-    compressFn: *const fn (ctx: *anyopaque, src: []const u8, dst: []u8) ?usize,
+    ctx: ?*anyopaque,
+    buf: []u8,
+    compressFn: *const fn (ctx: ?*anyopaque, src: []const u8, dst: []u8) ?[]const u8,
 
-    pub fn compress(self: Compressor, src: []const u8, dst: []u8) ?usize {
-        return self.compressFn(self.ctx, src, dst);
+    pub fn compress(self: Compressor, src: []const u8) ?[]const u8 {
+        return self.compressFn(self.ctx, src, self.buf);
     }
 };
 
@@ -40,6 +42,7 @@ pub const Error = error{
     SendFailed,
     SetSendBufFailed,
     AudioTooLarge,
+    CompressFailed,
 };
 
 // --- State ---
@@ -110,8 +113,7 @@ pub fn poll(self: *Connection) void {
 /// Send CMD_INIT to start the streaming session.
 pub fn sendInit(self: *Connection) Error!void {
     var buf: [5]u8 = undefined;
-    const lz4_mode: protocol.Lz4Mode = if (self.config.compressor != null) .lz4 else .off;
-    protocol.buildInitPacket(&buf, lz4_mode, self.config.sound_rate, self.config.sound_channels, self.config.rgb_mode);
+    protocol.buildInitPacket(&buf, self.config.lz4_mode, self.config.sound_rate, self.config.sound_channels, self.config.rgb_mode);
     try self.sendRaw(&buf);
 }
 
@@ -122,21 +124,38 @@ pub fn switchRes(self: *Connection, modeline: protocol.Modeline) Error!void {
     try self.sendRaw(&buf);
 }
 
-/// Send a raw BGR frame to the FPGA. Builds the blit header, then
-/// chunks the frame data into MTU-sized UDP packets.
+/// Send a frame to the FPGA. If a compressor is configured, compresses
+/// the frame and sends a 12-byte LZ4 header; otherwise sends the raw
+/// 8-byte header. Frame data is chunked into MTU-sized UDP packets.
 /// Caller retains ownership of `frame` -- data is read synchronously.
 pub fn sendFrame(self: *Connection, frame: []const u8, opts: FrameOpts) Error!void {
-    // Send blit header
-    var header: [8]u8 = undefined;
-    protocol.buildBlitHeader(&header, opts.frame_num, opts.field, opts.vsync_line);
-    try self.sendRaw(&header);
+    if (self.config.compressor) |comp| {
+        // Compressed path: 12-byte header with compressed size
+        const compressed = comp.compress(frame) orelse return Error.CompressFailed;
+        var header: [12]u8 = undefined;
+        protocol.buildBlitHeaderLz4(&header, opts.frame_num, opts.field, opts.vsync_line, @intCast(compressed.len));
+        try self.sendRaw(&header);
 
-    // Chunk frame data into MTU-sized UDP packets
-    var offset: usize = 0;
-    while (offset < frame.len) {
-        const end = @min(offset + self.mtu, frame.len);
-        try self.sendRaw(frame[offset..end]);
-        offset = end;
+        // Chunk compressed data
+        var offset: usize = 0;
+        while (offset < compressed.len) {
+            const end = @min(offset + self.mtu, compressed.len);
+            try self.sendRaw(compressed[offset..end]);
+            offset = end;
+        }
+    } else {
+        // Uncompressed path: 8-byte header
+        var header: [8]u8 = undefined;
+        protocol.buildBlitHeader(&header, opts.frame_num, opts.field, opts.vsync_line);
+        try self.sendRaw(&header);
+
+        // Chunk frame data into MTU-sized UDP packets
+        var offset: usize = 0;
+        while (offset < frame.len) {
+            const end = @min(offset + self.mtu, frame.len);
+            try self.sendRaw(frame[offset..end]);
+            offset = end;
+        }
     }
 }
 
@@ -398,6 +417,68 @@ test "Connection sendInit passes audio config" {
         .port = 9999,
         .sound_rate = .rate_48000,
         .sound_channels = .stereo,
+    });
+    defer conn.close();
+    try conn.sendInit();
+}
+
+// --- Compressor tests ---
+
+fn mockCompress(_: ?*anyopaque, src: []const u8, dst: []u8) ?[]const u8 {
+    // Mock: copy first half of input as "compressed" output
+    const out_len = src.len / 2;
+    if (out_len > dst.len) return null;
+    @memcpy(dst[0..out_len], src[0..out_len]);
+    return dst[0..out_len];
+}
+
+fn mockCompressFail(_: ?*anyopaque, _: []const u8, _: []u8) ?[]const u8 {
+    return null;
+}
+
+test "Connection sendFrame with compressor uses compressed path" {
+    var compress_buf: [4096]u8 = undefined;
+    var conn = try Connection.open(.{
+        .host = "127.0.0.1",
+        .port = 9999,
+        .compressor = .{
+            .ctx = null,
+            .buf = &compress_buf,
+            .compressFn = &mockCompress,
+        },
+    });
+    defer conn.close();
+    const frame = [_]u8{0xAB} ** 1000;
+    try conn.sendFrame(&frame, .{ .frame_num = 1 });
+}
+
+test "Connection sendFrame with failing compressor returns CompressFailed" {
+    var compress_buf: [4096]u8 = undefined;
+    var conn = try Connection.open(.{
+        .host = "127.0.0.1",
+        .port = 9999,
+        .compressor = .{
+            .ctx = null,
+            .buf = &compress_buf,
+            .compressFn = &mockCompressFail,
+        },
+    });
+    defer conn.close();
+    const frame = [_]u8{0xAB} ** 100;
+    try std.testing.expectError(Error.CompressFailed, conn.sendFrame(&frame, .{ .frame_num = 1 }));
+}
+
+test "Connection sendInit signals lz4 when lz4_mode set" {
+    var compress_buf: [4096]u8 = undefined;
+    var conn = try Connection.open(.{
+        .host = "127.0.0.1",
+        .port = 9999,
+        .lz4_mode = .lz4,
+        .compressor = .{
+            .ctx = null,
+            .buf = &compress_buf,
+            .compressFn = &mockCompress,
+        },
     });
     defer conn.close();
     try conn.sendInit();

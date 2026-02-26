@@ -4,12 +4,21 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    // LZ4 dependency
+    const lz4_dep = b.dependency("lz4", .{ .target = target, .optimize = optimize });
+
+    // Build options (version string from build.zig.zon)
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", "0.1.0");
+
     // Library module (static)
     const mod = b.addModule("groovy_mister", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    mod.addImport("lz4", lz4_dep.module("lz4"));
+    mod.addOptions("build_options", options);
 
     // Static library
     const lib = b.addLibrary(.{
@@ -25,6 +34,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    shared_mod.addImport("lz4", lz4_dep.module("lz4"));
+    shared_mod.addOptions("build_options", options);
     const shared_lib = b.addLibrary(.{
         .name = "groovy-mister-shared",
         .linkage = .dynamic,

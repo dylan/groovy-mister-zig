@@ -1,6 +1,12 @@
 .{
     .name = .groovy_mister,
     .version = "0.1.0",
+    .dependencies = .{
+        .lz4 = .{
+            .url = "git+https://github.com/jedisct1/zig-lz4?ref=main#55ebd6e509b421f115bb0c3e7427b6a1f23a0d1d",
+            .hash = "lz4-0.1.0-fUqx0aNqAwAgCD6q9krWFpMsUwLWZ-NRuuTxmHMOaxoV",
+        },
+    },
     .fingerprint = 0x1ec558e276d9e06d,
     .minimum_zig_version = "0.15.2",
     .paths = .{

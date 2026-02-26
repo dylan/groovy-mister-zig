@@ -15,23 +15,37 @@ pub const protocol = @import("protocol.zig");
 pub const Health = @import("Health.zig");
 /// Non-blocking UDP connection: socket lifecycle, frame chunking, sync polling.
 pub const Connection = @import("Connection.zig");
-/// C ABI exports: `gmz_connect`, `gmz_disconnect`, `gmz_tick`, `gmz_set_modeline`, `gmz_submit`, `gmz_submit_audio`, `gmz_wait_sync`.
+/// LZ4 block compression: compressor factory and buffer sizing.
+pub const lz4 = @import("lz4.zig");
+/// Delta frame encoding: XOR successive frames for bandwidth reduction.
+pub const delta = @import("delta.zig");
+/// Library version from build.zig.zon.
+pub const version = @import("version.zig");
+/// C ABI exports: `gmz_connect`, `gmz_disconnect`, `gmz_tick`, `gmz_set_modeline`, `gmz_submit`, `gmz_submit_audio`, `gmz_wait_sync`, `gmz_connect_ex`.
 pub const c_api = @import("c_api.zig");
 
 // Force export of C ABI symbols
 comptime {
     _ = &c_api.gmz_connect;
+    _ = &c_api.gmz_connect_ex;
     _ = &c_api.gmz_disconnect;
     _ = &c_api.gmz_tick;
     _ = &c_api.gmz_set_modeline;
     _ = &c_api.gmz_submit;
     _ = &c_api.gmz_submit_audio;
     _ = &c_api.gmz_wait_sync;
+    _ = &c_api.gmz_version;
+    _ = &c_api.gmz_version_major;
+    _ = &c_api.gmz_version_minor;
+    _ = &c_api.gmz_version_patch;
 }
 
 test {
     _ = protocol;
     _ = Health;
     _ = Connection;
+    _ = lz4;
+    _ = delta;
+    _ = version;
     _ = c_api;
 }
