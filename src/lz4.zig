@@ -18,10 +18,10 @@ pub fn compressBound(input_size: usize) usize {
     return lz4.compressBound(input_size);
 }
 
-/// LZ4 block compress `src` into `dst`. Returns the compressed slice, or null on failure.
-pub fn compress(_: ?*anyopaque, src: []const u8, dst: []u8) ?[]const u8 {
+/// LZ4 block compress `src` into `dst`. Returns the compressed result (never delta).
+pub fn compress(_: ?*anyopaque, src: []const u8, dst: []u8) ?Connection.CompressResult {
     const n = lz4.compressDefault(src, dst) catch return null;
-    return dst[0..n];
+    return .{ .data = dst[0..n], .is_delta = false };
 }
 
 // --- Tests ---
@@ -41,18 +41,19 @@ test "compress known compressible data" {
     var buf: [4096 + 256]u8 = undefined;
     const result = compress(null, &input, &buf);
     try std.testing.expect(result != null);
-    try std.testing.expect(result.?.len < input.len);
+    try std.testing.expect(!result.?.is_delta);
+    try std.testing.expect(result.?.data.len < input.len);
 }
 
 test "compress and decompress round-trip" {
     const input = "The quick brown fox jumps over the lazy dog. " ** 10;
     const bound = compressBound(input.len);
     var comp_buf: [2048]u8 = undefined;
-    const compressed = compress(null, input, comp_buf[0..bound]) orelse
+    const result = compress(null, input, comp_buf[0..bound]) orelse
         return error.CompressFailed;
 
     var decomp_buf: [input.len]u8 = undefined;
-    const n = lz4.decompressSafe(compressed, &decomp_buf) catch
+    const n = lz4.decompressSafe(result.data, &decomp_buf) catch
         return error.DecompressFailed;
     try std.testing.expectEqualSlices(u8, input, decomp_buf[0..n]);
 }
@@ -63,5 +64,6 @@ test "compressor factory returns working compressor" {
     const input = [_]u8{0xBB} ** 1000;
     const result = comp.compress(&input);
     try std.testing.expect(result != null);
-    try std.testing.expect(result.?.len < input.len);
+    try std.testing.expect(!result.?.is_delta);
+    try std.testing.expect(result.?.data.len < input.len);
 }

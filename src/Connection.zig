@@ -17,13 +17,19 @@ pub const Config = struct {
     lz4_mode: protocol.Lz4Mode = .off,
 };
 
+/// Result of a compression operation, including whether delta encoding was used.
+pub const CompressResult = struct {
+    data: []const u8,
+    is_delta: bool,
+};
+
 /// Optional LZ4 compressor passed as a function pointer + context.
 pub const Compressor = struct {
     ctx: ?*anyopaque,
     buf: []u8,
-    compressFn: *const fn (ctx: ?*anyopaque, src: []const u8, dst: []u8) ?[]const u8,
+    compressFn: *const fn (ctx: ?*anyopaque, src: []const u8, dst: []u8) ?CompressResult,
 
-    pub fn compress(self: Compressor, src: []const u8) ?[]const u8 {
+    pub fn compress(self: Compressor, src: []const u8) ?CompressResult {
         return self.compressFn(self.ctx, src, self.buf);
     }
 };
@@ -130,17 +136,26 @@ pub fn switchRes(self: *Connection, modeline: protocol.Modeline) Error!void {
 /// Caller retains ownership of `frame` -- data is read synchronously.
 pub fn sendFrame(self: *Connection, frame: []const u8, opts: FrameOpts) Error!void {
     if (self.config.compressor) |comp| {
-        // Compressed path: 12-byte header with compressed size
-        const compressed = comp.compress(frame) orelse return Error.CompressFailed;
-        var header: [12]u8 = undefined;
-        protocol.buildBlitHeaderLz4(&header, opts.frame_num, opts.field, opts.vsync_line, @intCast(compressed.len));
-        try self.sendRaw(&header);
+        // Compressed path
+        const result = comp.compress(frame) orelse return Error.CompressFailed;
+
+        if (result.is_delta) {
+            // Delta frame: 13-byte header with compressed size + delta flag
+            var header: [13]u8 = undefined;
+            protocol.buildBlitHeaderLz4Delta(&header, opts.frame_num, opts.field, opts.vsync_line, @intCast(result.data.len));
+            try self.sendRaw(&header);
+        } else {
+            // Non-delta frame: 12-byte header with compressed size
+            var header: [12]u8 = undefined;
+            protocol.buildBlitHeaderLz4(&header, opts.frame_num, opts.field, opts.vsync_line, @intCast(result.data.len));
+            try self.sendRaw(&header);
+        }
 
         // Chunk compressed data
         var offset: usize = 0;
-        while (offset < compressed.len) {
-            const end = @min(offset + self.mtu, compressed.len);
-            try self.sendRaw(compressed[offset..end]);
+        while (offset < result.data.len) {
+            const end = @min(offset + self.mtu, result.data.len);
+            try self.sendRaw(result.data[offset..end]);
             offset = end;
         }
     } else {
@@ -424,15 +439,15 @@ test "Connection sendInit passes audio config" {
 
 // --- Compressor tests ---
 
-fn mockCompress(_: ?*anyopaque, src: []const u8, dst: []u8) ?[]const u8 {
+fn mockCompress(_: ?*anyopaque, src: []const u8, dst: []u8) ?CompressResult {
     // Mock: copy first half of input as "compressed" output
     const out_len = src.len / 2;
     if (out_len > dst.len) return null;
     @memcpy(dst[0..out_len], src[0..out_len]);
-    return dst[0..out_len];
+    return .{ .data = dst[0..out_len], .is_delta = false };
 }
 
-fn mockCompressFail(_: ?*anyopaque, _: []const u8, _: []u8) ?[]const u8 {
+fn mockCompressFail(_: ?*anyopaque, _: []const u8, _: []u8) ?CompressResult {
     return null;
 }
 
