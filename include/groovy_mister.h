@@ -20,6 +20,11 @@ typedef struct gmz_conn *gmz_conn_t;
 #define GMZ_LZ4_ADAPTIVE     5
 #define GMZ_LZ4_ADAPTIVE_DELTA 6
 
+/// Frame pacer return codes for gmz_begin_frame.
+#define GMZ_PACE_READY   0  ///< Ready to submit the next frame.
+#define GMZ_PACE_STALLED 1  ///< FPGA unresponsive — caller should reconnect.
+#define GMZ_PACE_SKIP    2  ///< Backpressure — skip this frame (VRAM not ready).
+
 /// Modeline parameters for gmz_set_modeline.
 /// Layout matches Zig extern struct (C ABI, natural alignment).
 typedef struct {
@@ -91,6 +96,11 @@ int gmz_submit_audio(gmz_conn_t conn, const uint8_t *data, size_t len);
 
 /// Block until ACK received or timeout. Returns 0=ACK, 1=timeout, -1=null handle.
 int gmz_wait_sync(gmz_conn_t conn, int timeout_ms);
+
+/// Block until it's time to submit the next frame.
+/// Handles FPGA sync, drift correction, phase correction, and precision sleep.
+/// Returns: GMZ_PACE_READY(0), GMZ_PACE_STALLED(1), GMZ_PACE_SKIP(2), or -1 for null handle.
+int gmz_begin_frame(gmz_conn_t conn);
 
 /// Return the library version string (e.g. "0.1.0"). Null-terminated, static storage.
 const char *gmz_version(void);

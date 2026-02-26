@@ -202,6 +202,13 @@ pub fn fpgaStatus(self: *const Connection) protocol.FpgaStatus {
     return self.status;
 }
 
+/// Poll for pending ACKs and return the latest FPGA status.
+/// Convenience method combining poll() + fpgaStatus().
+pub fn pollStatus(self: *Connection) protocol.FpgaStatus {
+    self.poll();
+    return self.status;
+}
+
 /// Read the health stats (updated by poll).
 pub fn getHealth(self: *const Connection) Health {
     return self.health;

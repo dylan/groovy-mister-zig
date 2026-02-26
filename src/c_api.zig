@@ -7,6 +7,7 @@ const lz4 = @import("lz4.zig");
 const delta = @import("delta.zig");
 const version_info = @import("version.zig");
 const sync = @import("sync.zig");
+const pacer = @import("pacer.zig");
 
 // --- Internal handles ---
 
@@ -22,6 +23,7 @@ const ConnHandle = struct {
     delta_state: ?*delta.DeltaState = null,
     delta_buf: ?[]u8 = null,
     prev_frames: [2]?[]u8 = .{ null, null },
+    pacer_state: pacer.PacerState = .{},
 
     fn periodMs(self: *const ConnHandle) f64 {
         const m = self.modeline orelse return 16.7;
@@ -295,6 +297,7 @@ pub export fn gmz_set_modeline(conn: ?*ConnHandle, m: *const gmz_modeline_t) cal
     };
     handle.modeline = modeline;
     handle.timing = sync.frameTiming(modeline);
+    handle.pacer_state.updateTiming(handle.timing.?);
     handle.conn.switchRes(modeline) catch return -1;
     return 0;
 }
@@ -333,6 +336,14 @@ pub export fn gmz_submit_audio(conn: ?*ConnHandle, data: [*]const u8, len: usize
 pub export fn gmz_wait_sync(conn: ?*ConnHandle, timeout_ms: c_int) callconv(.c) c_int {
     const handle = conn orelse return -1;
     return if (handle.conn.waitSync(timeout_ms)) 0 else 1;
+}
+
+/// Block until it's time to submit the next frame.
+/// Handles FPGA sync, drift correction, phase correction, and precision sleep.
+/// Returns: 0=ready to submit, 1=FPGA stalled (reconnect), 2=backpressure (skip), -1=null handle.
+pub export fn gmz_begin_frame(conn: ?*ConnHandle) callconv(.c) c_int {
+    const handle = conn orelse return -1;
+    return @intFromEnum(handle.pacer_state.beginFrame(&handle.conn));
 }
 
 /// Return the library version string (e.g. "0.1.0"). Null-terminated.

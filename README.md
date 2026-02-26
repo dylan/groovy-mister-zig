@@ -5,6 +5,7 @@ Zig implementation of the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiST
 - **Video + audio streaming** to MiSTer FPGA over UDP
 - **Input reception** — joystick, PS/2 keyboard, and mouse state from the FPGA
 - **Frame sync primitives** — raster offset, vsync line computation, caller-driven timing
+- **Library-owned frame pacing** — drift-corrected `gmz_begin_frame` with backpressure handling
 - **LZ4 + delta compression** — 50-80% bandwidth reduction for slowly-changing content
 
 ## Build
@@ -25,23 +26,20 @@ The library manages two independent UDP channels to the MiSTer FPGA:
 
 **Input (port 32101)** — FPGA sends joystick, keyboard, and mouse state to the PC. Optional — many users only stream video. Send a 1-byte hello to start receiving, then poll for packets. Input has its own handle with an independent lifecycle.
 
-The library is deliberately non-opinionated about timing. It exposes pure primitives (`gmz_calc_vsync`, `gmz_raster_offset_ns`, `gmz_frame_time_ns`) and lets the caller own the sync loop. This means you can integrate it into any run loop — a game engine tick, a display link callback, a bare `while` loop — without fighting the library's assumptions.
+For timing, you have two options. **`gmz_begin_frame`** handles the entire pacing loop for you — drift correction, backpressure, interlaced phase alignment, precision sleep — so you never have to implement timing math. Or use the **low-level primitives** (`gmz_calc_vsync`, `gmz_raster_offset_ns`, `gmz_frame_time_ns`) and own the sync loop yourself.
 
 ## Usage
 
 ### Video Streaming
 
-The basic flow: connect → set modeline → submit frames.
+The basic flow: connect → set modeline → submit frames. Use `gmz_begin_frame` for automatic pacing, or `gmz_tick` + manual timing for full control.
 
-**C / C++**
+**C / C++ — with library pacing (recommended)**
 
 ```c
 #include "groovy_mister.h"
 
-// Connect with delta compression (or gmz_connect() without)
 gmz_conn_t conn = gmz_connect_ex("192.168.1.123", 1470, 0, 3, 2, GMZ_LZ4_DELTA);
-
-// Set display timing (320x240 @ 60Hz)
 gmz_modeline_t m = {
     .pixel_clock = 6.7,
     .h_active = 320, .h_begin = 336, .h_end = 368, .h_total = 426,
@@ -49,19 +47,19 @@ gmz_modeline_t m = {
 };
 gmz_set_modeline(conn, &m);
 
-// Frame loop
-while (running) {
-    gmz_state_t state = gmz_tick(conn);
-    if (state.vram_ready) {
-        uint16_t vsync = gmz_calc_vsync(conn, 2000000, emulation_ns, stream_ns);
-        gmz_submit(conn, data, len, frame, 0, vsync, 0.0);
-    }
+// Frame loop — gmz_begin_frame handles sync, drift, sleep, backpressure
+int result;
+while ((result = gmz_begin_frame(conn)) != GMZ_PACE_STALLED) {
+    if (result == GMZ_PACE_SKIP) continue;  // VRAM full, skip this frame
+    // process + render frame
+    gmz_submit(conn, data, len, frame++, 0, 0, 0.0);
 }
+// stalled — reconnect
 
 gmz_disconnect(conn);
 ```
 
-**Swift**
+**Swift — with library pacing**
 
 ```swift
 import GroovyMisterZig
@@ -81,11 +79,24 @@ modeline.v_end = 247;    modeline.v_total = 262
 gmz_set_modeline(conn, &modeline)
 
 // Frame loop
-let state = gmz_tick(conn)
-if state.vram_ready != 0 {
-    let vsync = gmz_calc_vsync(conn, 2_000_000, emulationNs, streamNs)
+while gmz_begin_frame(conn) == GMZ_PACE_READY {
     frameData.withUnsafeBytes { buf in
-        gmz_submit(conn, buf.baseAddress!, buf.count, frameNum, 0, vsync, 0)
+        gmz_submit(conn, buf.baseAddress!, buf.count, frameNum, 0, 0, 0)
+    }
+    frameNum += 1
+}
+// stalled — reconnect
+```
+
+**C / C++ — manual timing (full control)**
+
+```c
+// Frame loop — caller owns timing
+while (running) {
+    gmz_state_t state = gmz_tick(conn);
+    if (state.vram_ready) {
+        uint16_t vsync = gmz_calc_vsync(conn, 2000000, emulation_ns, stream_ns);
+        gmz_submit(conn, data, len, frame, 0, vsync, 0.0);
     }
 }
 ```
@@ -123,24 +134,17 @@ if (status.vram_ready) {
 
 ### Frame Sync
 
-The library exposes pure timing primitives — the caller owns the sync loop:
+**`gmz_begin_frame`** (recommended) handles the entire pacing loop: it syncs with the FPGA via CMD_GET_STATUS, computes a drift-corrected frame period, applies interlaced phase correction, sleeps with 2ms spin-wait precision, and handles backpressure (VRAM full) and stall detection. The drift controller targets 3 frames ahead of the FPGA and converges in ~1s with gain=0.02.
+
+For manual control, the library also exposes pure timing primitives:
 
 ```c
-// After setting a modeline:
 uint64_t frame_ns = gmz_frame_time_ns(conn);
-
-// Each frame:
-// 1. Emulate/render frame, measure emulation_ns
-// 2. Compute optimal vsync line (2ms safety margin)
 uint16_t vsync = gmz_calc_vsync(conn, 2000000, emulation_ns, stream_ns);
-// 3. Submit frame at the computed vsync line
-gmz_submit(conn, data, len, frame, 0, vsync, 0.0);
-// 4. Caller sleeps/yields for remaining frame budget
-// 5. Optionally read raster offset to fine-tune timing:
 int32_t offset_ns = gmz_raster_offset_ns(conn, frame);
 ```
 
-`gmz_calc_vsync` accounts for network latency (measured from ACK round-trips), emulation time, and streaming time to place the vsync line so the frame arrives just before the CRT beam reaches it. `gmz_raster_offset_ns` tells you how far off you were — positive means the FPGA is behind (you have headroom), negative means you're late.
+`gmz_calc_vsync` accounts for network latency, emulation time, and streaming time to place the vsync line so the frame arrives just before the CRT beam reaches it. `gmz_raster_offset_ns` tells you how far off you were — positive means the FPGA is behind (you have headroom), negative means you're late.
 
 ### Input
 
@@ -241,6 +245,7 @@ src/
   delta.zig       -- delta frame encoding: XOR successive frames + LZ4
   version.zig     -- library version from build.zig.zon
   sync.zig        -- CRT sync primitives: frame timing, raster offset, vsync
+  pacer.zig       -- frame pacer: drift correction, phase alignment, precision sleep
   c_api.zig       -- C ABI function exports
 
 include/
@@ -264,6 +269,7 @@ include/
 | `gmz_submit` | Send a video frame to the FPGA. |
 | `gmz_submit_audio` | Send raw 16-bit PCM audio to the FPGA. |
 | `gmz_wait_sync` | Block until FPGA ACK or timeout. |
+| `gmz_begin_frame` | Block until time to submit next frame (drift-corrected pacing). |
 | **Frame sync** | |
 | `gmz_frame_time_ns` | Get frame period in nanoseconds from modeline. |
 | `gmz_raster_offset_ns` | Get raster time offset (ns) for frame pacing. |

@@ -26,6 +26,8 @@ pub const delta = @import("delta.zig");
 pub const version = @import("version.zig");
 /// CRT sync primitives: frame timing, raster offset, vsync line computation.
 pub const sync = @import("sync.zig");
+/// Frame pacer: drift-corrected pacing with backpressure handling.
+pub const pacer = @import("pacer.zig");
 /// C ABI exports: `gmz_connect`, `gmz_disconnect`, `gmz_tick`, `gmz_set_modeline`, `gmz_submit`, `gmz_submit_audio`, `gmz_wait_sync`, `gmz_connect_ex`, `gmz_input_bind`, `gmz_input_close`, `gmz_input_poll`, `gmz_input_joy`, `gmz_input_ps2`.
 pub const c_api = @import("c_api.zig");
 
@@ -46,6 +48,7 @@ comptime {
     _ = &c_api.gmz_raster_offset_ns;
     _ = &c_api.gmz_calc_vsync;
     _ = &c_api.gmz_frame_time_ns;
+    _ = &c_api.gmz_begin_frame;
     _ = &c_api.gmz_input_bind;
     _ = &c_api.gmz_input_close;
     _ = &c_api.gmz_input_poll;
@@ -62,5 +65,6 @@ test {
     _ = delta;
     _ = version;
     _ = sync;
+    _ = pacer;
     _ = c_api;
 }
