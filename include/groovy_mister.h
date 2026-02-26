@@ -14,38 +14,38 @@ typedef struct gmz_conn *gmz_conn_t;
 /// Modeline parameters for gmz_set_modeline.
 /// Layout matches Zig extern struct (C ABI, natural alignment).
 typedef struct {
-    double pixel_clock;
-    uint16_t h_active;
-    uint16_t h_begin;
-    uint16_t h_end;
-    uint16_t h_total;
-    uint16_t v_active;
-    uint16_t v_begin;
-    uint16_t v_end;
-    uint16_t v_total;
-    uint8_t interlaced;
+    double pixel_clock;   ///< Pixel clock in MHz.
+    uint16_t h_active;    ///< Horizontal active pixels.
+    uint16_t h_begin;     ///< Horizontal sync start.
+    uint16_t h_end;       ///< Horizontal sync end.
+    uint16_t h_total;     ///< Horizontal total pixels per line.
+    uint16_t v_active;    ///< Vertical active lines.
+    uint16_t v_begin;     ///< Vertical sync start.
+    uint16_t v_end;       ///< Vertical sync end.
+    uint16_t v_total;     ///< Vertical total lines per frame.
+    uint8_t interlaced;   ///< 1 = interlaced, 0 = progressive.
     uint8_t _pad[6];
 } gmz_modeline_t;
 
 /// Combined FPGA status + health state returned by gmz_tick.
 /// Layout matches Zig extern struct (C ABI, natural alignment).
 typedef struct {
-    uint32_t frame;
-    uint32_t frame_echo;
-    uint16_t vcount;
-    uint16_t vcount_echo;
-    uint8_t vram_ready;
-    uint8_t vram_end_frame;
-    uint8_t vram_synced;
-    uint8_t vga_frameskip;
-    uint8_t vga_vblank;
-    uint8_t vga_f1;
-    uint8_t audio_active;
-    uint8_t vram_queue;
-    double avg_sync_wait_ms;
-    double p95_sync_wait_ms;
-    double vram_ready_rate;
-    double stall_threshold_ms;
+    uint32_t frame;              ///< FPGA's current frame counter.
+    uint32_t frame_echo;         ///< Last frame number acknowledged by FPGA.
+    uint16_t vcount;             ///< FPGA's current scanline position.
+    uint16_t vcount_echo;        ///< Scanline position when FPGA sent the ACK.
+    uint8_t vram_ready;          ///< 1 = FPGA VRAM is ready for the next frame.
+    uint8_t vram_end_frame;      ///< 1 = FPGA finished displaying the current frame.
+    uint8_t vram_synced;         ///< 1 = FPGA VRAM is in sync with host.
+    uint8_t vga_frameskip;       ///< 1 = FPGA skipped a frame (host too slow).
+    uint8_t vga_vblank;          ///< 1 = FPGA is currently in vertical blank.
+    uint8_t vga_f1;              ///< Current field for interlaced modes (0 or 1).
+    uint8_t audio_active;        ///< 1 = FPGA audio pipeline is active.
+    uint8_t vram_queue;          ///< Number of frames queued in FPGA VRAM.
+    double avg_sync_wait_ms;     ///< Rolling average sync wait time (128 samples).
+    double p95_sync_wait_ms;     ///< 95th percentile sync wait time (128 samples).
+    double vram_ready_rate;      ///< Fraction of ticks where VRAM was ready (0.0–1.0).
+    double stall_threshold_ms;   ///< Sync wait above this suggests a stall.
 } gmz_state_t;
 
 /// Connect to FPGA and send CMD_INIT. Returns handle or NULL on failure.

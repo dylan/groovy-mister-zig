@@ -1,6 +1,6 @@
 # GroovyMisterZig
 
-Zig library for streaming video and audio to a [MiSTer FPGA](https://mister-devel.github.io/MkDocs_MiSTer/) over UDP. Provides a C API suitable for integration from C, C++, Swift, or any language with C FFI.
+Zig implementation of the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiSTer) UDP streaming protocol by [@psakhis](https://github.com/psakhis). With a focus on zero-allocation packet building, non-blocking I/O, and a clean C ABI for integration from Swift, C, C++, or any language with C FFI.
 
 ## Requirements
 
@@ -86,6 +86,14 @@ include/
   module.modulemap   -- Clang module map for Swift
 ```
 
+## TODO
+
+- [ ] **LZ4 compression** — Protocol layer supports it, but frame data is sent uncompressed. Wire up the `Compressor` config to `sendFrame()`.
+- [ ] **Input support** — Joystick/PS2 keyboard/mouse feedback from FPGA (second UDP socket). Required for interactive applications.
+- [ ] **Precise CRT sync** — Nanosecond raster offset (`diffTimeRaster`) and frame margin parameter for tear-free output.
+- [ ] **Delta frame encoding** — Only send changed pixels. Reduces bandwidth 50-80% for slowly-changing content.
+- [ ] **Version query** — Expose `gmz_get_version()` to query FPGA firmware version (protocol command exists, not wired up).
+
 ## License
 
-GPL-3.0. See [LICENSE](LICENSE).
+GPL-2.0. See [LICENSE](LICENSE).

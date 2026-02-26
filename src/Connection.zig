@@ -62,7 +62,7 @@ pub fn open(config: Config) Error!Connection {
         return Error.SocketCreateFailed;
     errdefer posix.close(sock);
 
-    // Set send buffer to 2MB (matches C++ library)
+    // Set send buffer to 2MB.
     const send_buf_size: u32 = 2 * 1024 * 1024;
     posix.setsockopt(sock, posix.SOL.SOCKET, posix.SO.SNDBUF, &std.mem.toBytes(send_buf_size)) catch
         return Error.SetSendBufFailed;

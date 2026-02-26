@@ -33,7 +33,7 @@ pub const Lz4Mode = enum(u8) {
     adaptive_delta = 6,
 };
 
-/// Audio sample rate for PCM streaming (not yet implemented).
+/// Audio sample rate for PCM streaming.
 pub const SoundRate = enum(u8) {
     off = 0,
     rate_22050 = 1,
@@ -41,7 +41,7 @@ pub const SoundRate = enum(u8) {
     rate_48000 = 3,
 };
 
-/// Audio channel layout for PCM streaming (not yet implemented).
+/// Audio channel layout for PCM streaming.
 pub const SoundChannels = enum(u8) {
     off = 0,
     mono = 1,
