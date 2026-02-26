@@ -27,10 +27,10 @@ pub const CompressResult = struct {
 pub const Compressor = struct {
     ctx: ?*anyopaque,
     buf: []u8,
-    compressFn: *const fn (ctx: ?*anyopaque, src: []const u8, dst: []u8) ?CompressResult,
+    compressFn: *const fn (ctx: ?*anyopaque, src: []const u8, dst: []u8, field: u8) ?CompressResult,
 
-    pub fn compress(self: Compressor, src: []const u8) ?CompressResult {
-        return self.compressFn(self.ctx, src, self.buf);
+    pub fn compress(self: Compressor, src: []const u8, field: u8) ?CompressResult {
+        return self.compressFn(self.ctx, src, self.buf, field);
     }
 };
 
@@ -137,7 +137,7 @@ pub fn switchRes(self: *Connection, modeline: protocol.Modeline) Error!void {
 pub fn sendFrame(self: *Connection, frame: []const u8, opts: FrameOpts) Error!void {
     if (self.config.compressor) |comp| {
         // Compressed path
-        const result = comp.compress(frame) orelse return Error.CompressFailed;
+        const result = comp.compress(frame, opts.field) orelse return Error.CompressFailed;
 
         if (result.is_delta) {
             // Delta frame: 13-byte header with compressed size + delta flag
@@ -439,7 +439,7 @@ test "Connection sendInit passes audio config" {
 
 // --- Compressor tests ---
 
-fn mockCompress(_: ?*anyopaque, src: []const u8, dst: []u8) ?CompressResult {
+fn mockCompress(_: ?*anyopaque, src: []const u8, dst: []u8, _: u8) ?CompressResult {
     // Mock: copy first half of input as "compressed" output
     const out_len = src.len / 2;
     if (out_len > dst.len) return null;
@@ -447,7 +447,7 @@ fn mockCompress(_: ?*anyopaque, src: []const u8, dst: []u8) ?CompressResult {
     return .{ .data = dst[0..out_len], .is_delta = false };
 }
 
-fn mockCompressFail(_: ?*anyopaque, _: []const u8, _: []u8) ?CompressResult {
+fn mockCompressFail(_: ?*anyopaque, _: []const u8, _: []u8, _: u8) ?CompressResult {
     return null;
 }
 

@@ -21,7 +21,7 @@ const ConnHandle = struct {
     compress_buf: ?[]u8 = null,
     delta_state: ?*delta.DeltaState = null,
     delta_buf: ?[]u8 = null,
-    prev_frame: ?[]u8 = null,
+    prev_frames: [2]?[]u8 = .{ null, null },
 
     fn periodMs(self: *const ConnHandle) f64 {
         const m = self.modeline orelse return 16.7;
@@ -148,7 +148,7 @@ pub export fn gmz_connect_ex(host: [*:0]const u8, mtu: u16, rgb_mode: u8, sound_
     var compress_buf: ?[]u8 = null;
     var delta_state_ptr: ?*delta.DeltaState = null;
     var delta_buf_alloc: ?[]u8 = null;
-    var prev_frame_alloc: ?[]u8 = null;
+    var prev_frame_allocs: [2]?[]u8 = .{ null, null };
 
     if (lz4_mode > 0) {
         const buf = std.heap.c_allocator.alloc(u8, lz4.compressBound(max_frame_size)) catch {
@@ -160,15 +160,24 @@ pub export fn gmz_connect_ex(host: [*:0]const u8, mtu: u16, rgb_mode: u8, sound_
         // Delta modes: lz4_delta(2), lz4_hc_delta(4), adaptive_delta(6)
         const is_delta = (lz4_mode == 2 or lz4_mode == 4 or lz4_mode == 6);
         if (is_delta) {
-            const pf = std.heap.c_allocator.alloc(u8, max_frame_size) catch {
+            const pf0 = std.heap.c_allocator.alloc(u8, max_frame_size) catch {
                 std.heap.c_allocator.free(buf);
                 std.heap.c_allocator.destroy(handle);
                 return null;
             };
-            prev_frame_alloc = pf;
+            prev_frame_allocs[0] = pf0;
+
+            const pf1 = std.heap.c_allocator.alloc(u8, max_frame_size) catch {
+                std.heap.c_allocator.free(pf0);
+                std.heap.c_allocator.free(buf);
+                std.heap.c_allocator.destroy(handle);
+                return null;
+            };
+            prev_frame_allocs[1] = pf1;
 
             const db = std.heap.c_allocator.alloc(u8, max_frame_size) catch {
-                std.heap.c_allocator.free(pf);
+                std.heap.c_allocator.free(pf1);
+                std.heap.c_allocator.free(pf0);
                 std.heap.c_allocator.free(buf);
                 std.heap.c_allocator.destroy(handle);
                 return null;
@@ -177,13 +186,14 @@ pub export fn gmz_connect_ex(host: [*:0]const u8, mtu: u16, rgb_mode: u8, sound_
 
             const ds = std.heap.c_allocator.create(delta.DeltaState) catch {
                 std.heap.c_allocator.free(db);
-                std.heap.c_allocator.free(pf);
+                std.heap.c_allocator.free(pf1);
+                std.heap.c_allocator.free(pf0);
                 std.heap.c_allocator.free(buf);
                 std.heap.c_allocator.destroy(handle);
                 return null;
             };
             ds.* = .{
-                .prev_frame = pf,
+                .prev_frames = .{ pf0, pf1 },
                 .delta_buf = db,
                 .keyframe_interval = 120,
             };
@@ -207,7 +217,7 @@ pub export fn gmz_connect_ex(host: [*:0]const u8, mtu: u16, rgb_mode: u8, sound_
         }) catch {
             if (delta_state_ptr) |ds| std.heap.c_allocator.destroy(ds);
             if (delta_buf_alloc) |db| std.heap.c_allocator.free(db);
-            if (prev_frame_alloc) |pf| std.heap.c_allocator.free(pf);
+            for (prev_frame_allocs) |pf| if (pf) |p| std.heap.c_allocator.free(p);
             if (compress_buf) |buf| std.heap.c_allocator.free(buf);
             std.heap.c_allocator.destroy(handle);
             return null;
@@ -215,12 +225,12 @@ pub export fn gmz_connect_ex(host: [*:0]const u8, mtu: u16, rgb_mode: u8, sound_
         .compress_buf = compress_buf,
         .delta_state = delta_state_ptr,
         .delta_buf = delta_buf_alloc,
-        .prev_frame = prev_frame_alloc,
+        .prev_frames = prev_frame_allocs,
     };
     handle.conn.sendInit() catch {
         if (handle.delta_state) |ds| std.heap.c_allocator.destroy(ds);
         if (handle.delta_buf) |db| std.heap.c_allocator.free(db);
-        if (handle.prev_frame) |pf| std.heap.c_allocator.free(pf);
+        for (handle.prev_frames) |pf| if (pf) |p| std.heap.c_allocator.free(p);
         if (handle.compress_buf) |buf| std.heap.c_allocator.free(buf);
         handle.conn.close();
         std.heap.c_allocator.destroy(handle);
@@ -234,7 +244,7 @@ pub export fn gmz_disconnect(conn: ?*ConnHandle) callconv(.c) void {
     const handle = conn orelse return;
     if (handle.delta_state) |ds| std.heap.c_allocator.destroy(ds);
     if (handle.delta_buf) |db| std.heap.c_allocator.free(db);
-    if (handle.prev_frame) |pf| std.heap.c_allocator.free(pf);
+    for (handle.prev_frames) |pf| if (pf) |p| std.heap.c_allocator.free(p);
     if (handle.compress_buf) |buf| std.heap.c_allocator.free(buf);
     handle.conn.close();
     std.heap.c_allocator.destroy(handle);
@@ -573,7 +583,8 @@ test "gmz_connect_ex with lz4_delta mode" {
         // Delta state should be allocated
         try std.testing.expect(h.delta_state != null);
         try std.testing.expect(h.delta_buf != null);
-        try std.testing.expect(h.prev_frame != null);
+        try std.testing.expect(h.prev_frames[0] != null);
+        try std.testing.expect(h.prev_frames[1] != null);
         gmz_disconnect(h);
     }
 }
