@@ -60,6 +60,7 @@ typedef struct {
     double p95_sync_wait_ms;     ///< 95th percentile sync wait time (128 samples).
     double vram_ready_rate;      ///< Fraction of ticks where VRAM was ready (0.0–1.0).
     double stall_threshold_ms;   ///< Sync wait above this suggests a stall.
+    uint64_t dropped_frames;     ///< Monotonic counter of real frame-level drops from the pacer.
 } gmz_state_t;
 
 /// Connect to FPGA and send CMD_INIT. Returns handle or NULL on failure.

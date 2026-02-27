@@ -67,6 +67,8 @@ pub const gmz_state_t = extern struct {
     p95_sync_wait_ms: f64 = 0,
     vram_ready_rate: f64 = 1.0,
     stall_threshold_ms: f64 = 0,
+    /// Monotonic counter of real frame-level drops detected by the pacer.
+    dropped_frames: u64 = 0,
 };
 
 /// Joystick state returned by `gmz_input_joy`.
@@ -277,6 +279,7 @@ pub export fn gmz_tick(conn: ?*ConnHandle) callconv(.c) gmz_state_t {
         .p95_sync_wait_ms = h.p95_sync_wait_ms,
         .vram_ready_rate = h.vram_ready_rate,
         .stall_threshold_ms = h.stallThreshold(handle.periodMs()),
+        .dropped_frames = handle.pacer_state.dropped_frames,
     };
 }
 
@@ -319,7 +322,11 @@ pub export fn gmz_submit(
         .field = field,
         .vsync_line = vsync_line,
     }) catch return -1;
-    handle.conn.health.record(sync_wait_ms, handle.conn.fpgaStatus().vram_ready);
+    // Only record sync timing from submit when caller provides it (non-pacer clients).
+    // When using gmz_begin_frame(), the pacer records sync wait internally.
+    if (sync_wait_ms > 0) {
+        handle.conn.health.record(sync_wait_ms, handle.conn.fpgaStatus().vram_ready);
+    }
     return 0;
 }
 
@@ -505,7 +512,8 @@ test "gmz_state_t field layout" {
     try std.testing.expectEqual(@as(usize, 32), @offsetOf(gmz_state_t, "p95_sync_wait_ms"));
     try std.testing.expectEqual(@as(usize, 40), @offsetOf(gmz_state_t, "vram_ready_rate"));
     try std.testing.expectEqual(@as(usize, 48), @offsetOf(gmz_state_t, "stall_threshold_ms"));
-    try std.testing.expectEqual(@as(usize, 56), @sizeOf(gmz_state_t));
+    try std.testing.expectEqual(@as(usize, 56), @offsetOf(gmz_state_t, "dropped_frames"));
+    try std.testing.expectEqual(@as(usize, 64), @sizeOf(gmz_state_t));
 }
 
 test "gmz_modeline_t field layout" {
@@ -533,6 +541,7 @@ test "gmz_state_t defaults" {
     try std.testing.expectApproxEqAbs(@as(f64, 0.0), s.p95_sync_wait_ms, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 1.0), s.vram_ready_rate, 0.001);
     try std.testing.expectApproxEqAbs(@as(f64, 0.0), s.stall_threshold_ms, 0.001);
+    try std.testing.expectEqual(@as(u64, 0), s.dropped_frames);
 }
 
 test "null handle safety: gmz_disconnect" {

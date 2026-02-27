@@ -49,6 +49,12 @@ pub const PacerState = struct {
     /// Monotonic timestamp (ns) when last beginFrame returned to caller.
     last_pace_ns: u64 = 0,
 
+    // --- Drop tracking ---
+    /// Wall-clock time (ns) of last `.ready` return.
+    last_ready_ns: u64 = 0,
+    /// Monotonic counter of real frame-level drops (full frame periods lost).
+    dropped_frames: u64 = 0,
+
     // --- Stall / backpressure detection ---
     consecutive_timeouts: u32 = 0,
     max_consecutive_timeouts: u32 = 3,
@@ -69,8 +75,10 @@ pub const PacerState = struct {
         const in_settle = self.client_frame < self.settle_frames;
         const timeout: i32 = if (in_settle) 50 else 16;
 
-        // 1. Sync — send CMD_GET_STATUS and wait for ACK
+        // 1. Sync — send CMD_GET_STATUS and wait for ACK, measuring round-trip time
+        const sync_start = nowNs();
         const synced = conn.waitSync(timeout);
+        const sync_elapsed_ns = nowNs() -| sync_start;
 
         if (!synced) {
             self.consecutive_timeouts += 1;
@@ -83,6 +91,10 @@ pub const PacerState = struct {
             return .ready;
         }
         self.consecutive_timeouts = 0;
+
+        // Record sync wait into health ring buffer
+        const sync_ms = @as(f64, @floatFromInt(sync_elapsed_ns)) / 1_000_000.0;
+        conn.health.record(sync_ms, conn.fpgaStatus().vram_ready);
 
         // 2. Check backpressure
         const status = conn.fpgaStatus();
@@ -100,8 +112,23 @@ pub const PacerState = struct {
         const frame_ns_f: f64 = @floatFromInt(self.frame_time_ns);
         const paced_ns: u64 = @intFromFloat(@max(1.0, frame_ns_f * pace_mult));
 
-        // 4. Sleep until target
+        // 4. Track real dropped frames before sleeping.
+        // If time since last .ready exceeds 1.5 frame periods, count missed frames.
+        const now = nowNs();
+        if (self.last_ready_ns > 0 and self.frame_time_ns > 0) {
+            const gap = now -| self.last_ready_ns;
+            const threshold = self.frame_time_ns + (self.frame_time_ns / 2); // 1.5x
+            if (gap > threshold) {
+                const missed = gap / self.frame_time_ns;
+                if (missed > 1) {
+                    self.dropped_frames += missed - 1;
+                }
+            }
+        }
+
+        // 5. Sleep until target
         self.sleepForDuration(paced_ns);
+        self.last_ready_ns = nowNs();
         self.client_frame +%= 1;
         return .ready;
     }
@@ -165,6 +192,8 @@ pub const PacerState = struct {
     pub fn reset(self: *PacerState) void {
         self.client_frame = 0;
         self.last_pace_ns = 0;
+        self.last_ready_ns = 0;
+        self.dropped_frames = 0;
         self.consecutive_timeouts = 0;
         self.consecutive_drops = 0;
     }
@@ -199,6 +228,8 @@ test "reset zeros tracking state" {
     var p = PacerState{};
     p.client_frame = 100;
     p.last_pace_ns = 999999;
+    p.last_ready_ns = 888888;
+    p.dropped_frames = 42;
     p.consecutive_timeouts = 5;
     p.consecutive_drops = 10;
 
@@ -206,6 +237,8 @@ test "reset zeros tracking state" {
 
     try std.testing.expectEqual(@as(u32, 0), p.client_frame);
     try std.testing.expectEqual(@as(u64, 0), p.last_pace_ns);
+    try std.testing.expectEqual(@as(u64, 0), p.last_ready_ns);
+    try std.testing.expectEqual(@as(u64, 0), p.dropped_frames);
     try std.testing.expectEqual(@as(u32, 0), p.consecutive_timeouts);
     try std.testing.expectEqual(@as(u32, 0), p.consecutive_drops);
 }
