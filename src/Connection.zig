@@ -86,18 +86,10 @@ pub fn open(config: Config) Error!Connection {
 
 /// Send CMD_CLOSE and close the socket. Always safe to call.
 pub fn close(self: *Connection) void {
-    // Best-effort close packet — use raw syscall to avoid unexpectedErrno
-    // stack dumps when the destination is unreachable.
+    // Best-effort close packet — fire-and-forget.
     var buf: [1]u8 = undefined;
     protocol.buildClosePacket(&buf);
-    _ = std.posix.system.sendto(
-        self.sock,
-        &buf,
-        buf.len,
-        0,
-        &self.dest_addr.any,
-        self.dest_addr.getOsSockLen(),
-    );
+    _ = posix.sendto(self.sock, &buf, 0, &self.dest_addr.any, self.dest_addr.getOsSockLen()) catch {};
     posix.close(self.sock);
     self.* = undefined;
 }
@@ -240,14 +232,7 @@ pub fn waitSync(self: *Connection, timeout_ms: i32) bool {
 /// Best-effort CMD_GET_STATUS (1 byte). Fire-and-forget.
 fn sendGetStatus(self: *Connection) void {
     var buf: [1]u8 = .{@intFromEnum(protocol.Command.get_status)};
-    _ = std.posix.system.sendto(
-        self.sock,
-        &buf,
-        buf.len,
-        0,
-        &self.dest_addr.any,
-        self.dest_addr.getOsSockLen(),
-    );
+    _ = posix.sendto(self.sock, &buf, 0, &self.dest_addr.any, self.dest_addr.getOsSockLen()) catch {};
 }
 
 // --- Internal ---
