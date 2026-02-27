@@ -13,9 +13,21 @@ Zig implementation of the [Groovy_MiSTer](https://github.com/psakhis/Groovy_MiST
 Requires [Zig](https://ziglang.org/) 0.15.2+.
 
 ```bash
-zig build          # produces zig-out/lib/libgroovy-mister.a (static)
+zig build          # native static + shared library
 zig build test     # run unit tests
 zig build docs     # generate documentation
+zig build cross    # cross-compile for all targets
+```
+
+### Cross-Compilation
+
+`zig build cross` produces static and shared libraries for all supported targets:
+
+```
+zig-out/lib/x86_64-linux/lib/libgroovy-mister.a      + .so
+zig-out/lib/x86_64-macos/lib/libgroovy-mister.a      + .dylib
+zig-out/lib/x86_64-windows/lib/libgroovy-mister.a    + .dll
+zig-out/lib/aarch64-linux/lib/libgroovy-mister.a     + .so
 ```
 
 ## Overview

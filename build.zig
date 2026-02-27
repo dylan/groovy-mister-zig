@@ -61,25 +61,32 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_tests.step);
 
-    // Cross-compilation targets (x86_64)
+    // Cross-compilation targets
     const cross_targets = [_]std.Target.Query{
         .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
         .{ .cpu_arch = .x86_64, .os_tag = .macos },
         .{ .cpu_arch = .x86_64, .os_tag = .windows },
+        .{ .cpu_arch = .aarch64, .os_tag = .linux, .abi = .gnu },
     };
 
-    const cross_step = b.step("cross", "Build for all x86_64 targets");
+    const cross_step = b.step("cross", "Build for all cross-compilation targets");
 
     for (cross_targets) |query| {
         const cross_target = b.resolveTargetQuery(query);
         const cross_lz4 = b.dependency("lz4", .{ .target = cross_target, .optimize = optimize });
 
-        const prefix = switch (query.os_tag.?) {
-            .linux => "x86_64-linux",
-            .macos => "x86_64-macos",
-            .windows => "x86_64-windows",
+        const arch = switch (query.cpu_arch.?) {
+            .x86_64 => "x86_64",
+            .aarch64 => "aarch64",
             else => unreachable,
         };
+        const os = switch (query.os_tag.?) {
+            .linux => "linux",
+            .macos => "macos",
+            .windows => "windows",
+            else => unreachable,
+        };
+        const prefix = b.fmt("{s}-{s}", .{ arch, os });
 
         // Static library
         const cross_mod = b.addModule(b.fmt("{s}-static", .{prefix}), .{
