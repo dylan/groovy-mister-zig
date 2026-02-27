@@ -617,12 +617,12 @@ test "gmz_connect_ex with invalid lz4_mode returns null" {
 test "gmz_version returns non-null string" {
     const v = gmz_version();
     try std.testing.expect(v[0] != 0);
-    try std.testing.expectEqualStrings("0.1.0", std.mem.span(v));
+    try std.testing.expectEqualStrings("1.0.0", std.mem.span(v));
 }
 
 test "gmz_version_major/minor/patch" {
-    try std.testing.expectEqual(@as(u32, 0), gmz_version_major());
-    try std.testing.expectEqual(@as(u32, 1), gmz_version_minor());
+    try std.testing.expectEqual(@as(u32, 1), gmz_version_major());
+    try std.testing.expectEqual(@as(u32, 0), gmz_version_minor());
     try std.testing.expectEqual(@as(u32, 0), gmz_version_patch());
 }
 

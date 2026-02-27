@@ -9,7 +9,7 @@ pub fn build(b: *std.Build) void {
 
     // Build options (version string from build.zig.zon)
     const options = b.addOptions();
-    options.addOption([]const u8, "version", "0.1.0");
+    options.addOption([]const u8, "version", "1.0.0");
 
     // Library module (static)
     // Disable stack probing so external (non-Zig) linkers don't need __zig_probe_stack.
