@@ -24,10 +24,10 @@ zig build cross    # cross-compile for all targets
 `zig build cross` produces static and shared libraries for all supported targets:
 
 ```
-zig-out/lib/x86_64-linux/lib/libgroovy-mister.a      + .so
-zig-out/lib/x86_64-macos/lib/libgroovy-mister.a      + .dylib
-zig-out/lib/x86_64-windows/lib/libgroovy-mister.a    + .dll
-zig-out/lib/aarch64-linux/lib/libgroovy-mister.a     + .so
+zig-out/lib/x86_64-linux/lib/libgroovy-mister-zig.a      + .so
+zig-out/lib/x86_64-macos/lib/libgroovy-mister-zig.a      + .dylib
+zig-out/lib/x86_64-windows/lib/libgroovy-mister-zig.a    + .dll
+zig-out/lib/aarch64-linux/lib/libgroovy-mister-zig.a     + .so
 ```
 
 ## Overview
@@ -235,12 +235,12 @@ Pass an `LZ4` mode to `gmz_connect_ex` (C/Swift) or set `.lz4_mode` on `Connecti
 
 ### Linking
 
-**C / C++**: Link with `-lgroovy-mister` and add `include/` to your header search path.
+**C / C++**: Link with `-lgroovy-mister-zig` and add `include/` to your header search path.
 
 **Swift / Xcode**: The `include/module.modulemap` enables `import GroovyMisterZig`:
 - `LIBRARY_SEARCH_PATHS = $(SRCROOT)/GroovyMisterZig/zig-out/lib`
 - `SWIFT_INCLUDE_PATHS = $(SRCROOT)/GroovyMisterZig/include`
-- `OTHER_LDFLAGS = -lgroovy-mister`
+- `OTHER_LDFLAGS = -lgroovy-mister-zig`
 
 **Zig**: `const gmz = @import("groovy_mister");`
 

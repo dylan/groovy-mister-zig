@@ -22,7 +22,7 @@ pub fn build(b: *std.Build) void {
 
     // Static library
     const lib = b.addLibrary(.{
-        .name = "groovy-mister",
+        .name = "groovy-mister-zig",
         .linkage = .static,
         .root_module = mod,
     });
@@ -37,7 +37,7 @@ pub fn build(b: *std.Build) void {
     shared_mod.addImport("lz4", lz4_dep.module("lz4"));
     shared_mod.addOptions("build_options", options);
     const shared_lib = b.addLibrary(.{
-        .name = "groovy-mister-shared",
+        .name = "groovy-mister-zig-shared",
         .linkage = .dynamic,
         .root_module = shared_mod,
     });
@@ -98,12 +98,12 @@ pub fn build(b: *std.Build) void {
         cross_mod.addImport("lz4", cross_lz4.module("lz4"));
         cross_mod.addOptions("build_options", options);
         const cross_static = b.addLibrary(.{
-            .name = "groovy-mister",
+            .name = "groovy-mister-zig",
             .linkage = .static,
             .root_module = cross_mod,
         });
         const install_static = b.addInstallArtifact(cross_static, .{
-            .dest_sub_path = b.fmt("{s}/lib/libgroovy-mister.a", .{prefix}),
+            .dest_sub_path = b.fmt("{s}/lib/libgroovy-mister-zig.a", .{prefix}),
         });
         cross_step.dependOn(&install_static.step);
 
@@ -117,14 +117,14 @@ pub fn build(b: *std.Build) void {
         cross_shared_mod.addImport("lz4", cross_lz4.module("lz4"));
         cross_shared_mod.addOptions("build_options", options);
         const cross_shared = b.addLibrary(.{
-            .name = "groovy-mister-shared",
+            .name = "groovy-mister-zig-shared",
             .linkage = .dynamic,
             .root_module = cross_shared_mod,
         });
         const shared_filename = switch (query.os_tag.?) {
-            .linux => "libgroovy-mister-shared.so",
-            .macos => "libgroovy-mister-shared.dylib",
-            .windows => "groovy-mister-shared.dll",
+            .linux => "libgroovy-mister-zig-shared.so",
+            .macos => "libgroovy-mister-zig-shared.dylib",
+            .windows => "groovy-mister-zig-shared.dll",
             else => unreachable,
         };
         const is_windows = query.os_tag.? == .windows;
