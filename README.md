@@ -30,6 +30,25 @@ zig-out/lib/x86_64-windows/lib/libgroovy-mister-zig.a    + .dll
 zig-out/lib/aarch64-linux/lib/libgroovy-mister-zig.a     + .so
 ```
 
+### macOS Universal Binaries
+
+Combine the native (aarch64) and cross-compiled (x86_64) libraries into universal binaries with `lipo`:
+
+```bash
+zig build                # native aarch64
+zig build cross          # cross-compile x86_64
+
+lipo -create \
+  zig-out/lib/libgroovy-mister-zig.a \
+  zig-out/lib/x86_64-macos/lib/libgroovy-mister-zig.a \
+  -output libgroovy-mister-zig-universal.a
+
+lipo -create \
+  zig-out/lib/libgroovy-mister-zig-shared.dylib \
+  zig-out/lib/x86_64-macos/lib/libgroovy-mister-zig-shared.dylib \
+  -output libgroovy-mister-zig-shared-universal.dylib
+```
+
 ## Overview
 
 The library manages two independent UDP channels to the MiSTer FPGA:
