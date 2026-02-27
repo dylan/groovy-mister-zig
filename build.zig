@@ -12,10 +12,12 @@ pub fn build(b: *std.Build) void {
     options.addOption([]const u8, "version", "0.1.0");
 
     // Library module (static)
+    // Disable stack probing so external (non-Zig) linkers don't need __zig_probe_stack.
     const mod = b.addModule("groovy_mister", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .stack_check = false,
     });
     mod.addImport("lz4", lz4_dep.module("lz4"));
     mod.addOptions("build_options", options);
@@ -33,6 +35,7 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
+        .stack_check = false,
     });
     shared_mod.addImport("lz4", lz4_dep.module("lz4"));
     shared_mod.addOptions("build_options", options);
@@ -94,6 +97,7 @@ pub fn build(b: *std.Build) void {
             .target = cross_target,
             .optimize = optimize,
             .link_libc = true,
+            .stack_check = false,
         });
         cross_mod.addImport("lz4", cross_lz4.module("lz4"));
         cross_mod.addOptions("build_options", options);
@@ -113,6 +117,7 @@ pub fn build(b: *std.Build) void {
             .target = cross_target,
             .optimize = optimize,
             .link_libc = true,
+            .stack_check = false,
         });
         cross_shared_mod.addImport("lz4", cross_lz4.module("lz4"));
         cross_shared_mod.addOptions("build_options", options);
